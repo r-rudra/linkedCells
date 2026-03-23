@@ -18,7 +18,7 @@ linked_cells_ui <- function(id) {
 
     shiny::tags$head(
       shiny::tags$style(shiny::HTML(sprintf("
-        #%s_controls {
+        #%s {
           padding: 12px;
           background: #f5f5f5;
           border-bottom: 1px solid #ddd;
@@ -26,16 +26,33 @@ linked_cells_ui <- function(id) {
           border-radius: 4px;
         }
 
-        #%s_table .linked-edited {
+        #%s .linked-edited {
           background-color: #FFEB3B !important;
           font-weight: bold;
         }
 
-        #%s_table .linked-adjusted {
+        #%s .linked-adjusted {
           background-color: #FFE5B4 !important;
         }
 
-        #%s_busy {
+        /* Vertical borders */
+        #%s table.dataTable td,
+        #%s table.dataTable th {
+          border-right: 1px solid #ddd;
+        }
+
+        #%s table.dataTable {
+          border-left: 1px solid #ddd;
+          border-right: 1px solid #ddd;
+        }
+
+        /* Header styling */
+        #%s thead th {
+          background-color: #f8f9fa;
+          font-weight: 600;
+        }
+
+        #%s {
           display: none;
           position: fixed;
           top: 50%%;
@@ -49,10 +66,20 @@ linked_cells_ui <- function(id) {
           font-size: 16px;
         }
 
-        #%s_busy.show {
+        #%s.show {
           display: block;
         }
-      ", ns("controls"), ns("table"), ns("table"), ns("busy"), ns("busy"))))
+      ",
+                                            ns("controls"),  # 1: controls div
+                                            ns("table"),     # 2: .linked-edited
+                                            ns("table"),     # 3: .linked-adjusted
+                                            ns("table"),     # 4: td/th border-right
+                                            ns("table"),     # 5: td/th border-right (th)
+                                            ns("table"),     # 6: table border
+                                            ns("table"),     # 7: thead th
+                                            ns("busy"),      # 8: busy display:none
+                                            ns("busy")       # 9: busy.show
+      )))
     ),
 
     shiny::div(
@@ -85,7 +112,6 @@ linked_cells_ui <- function(id) {
 #' @export
 linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, tolerance = 0.1) {
 
-  # FIX 4: data validation
   if (!is.data.frame(data)) {
     stop("data must be a dataframe")
   }
@@ -125,93 +151,153 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
 
       display_data <- if (isTRUE(input$batch_mode)) state$in_editor else state$committed
 
+      changes <- detect_changes(
+        state$committed,
+        display_data,
+        num_locked_rows,
+        tolerance
+      )
+
+      # Build JS array of changed cells (0-indexed for DataTables)
+      changed_js <- if (nrow(changes) > 0) {
+        paste(
+          apply(changes, 1, function(x) {
+            sprintf("{row:%d,col:%d}", as.integer(x["row"]) - 1L, as.integer(x["col"]) - 1L)
+          }),
+          collapse = ","
+        )
+      } else {
+        ""
+      }
+
+      # Editable config: disable locked rows (1-based for DT)
+      editable_cfg <- list(target = "cell")
+      if (num_locked_rows > 0L) {
+        editable_cfg$disable <- list(rows = seq_len(num_locked_rows))
+      }
+
+      # initComplete runs after table is fully drawn — correct hook for row/cell styling
+      # callback (top-level DT arg) is for column defs only; post-draw logic must use initComplete
+      init_js <- DT::JS(sprintf("
+        function(settings, json) {
+          var table = this.api();
+          var changes = [%s];
+          var locked  = %d;
+
+          // Highlight edited cells
+          if (changes.length > 0) {
+            table.rows().every(function(rowIdx) {
+              var rowNode = this.node();
+              changes.forEach(function(cell) {
+                if (cell.row === rowIdx) {
+                  $('td:eq(' + cell.col + ')', rowNode).addClass('linked-edited');
+                }
+              });
+            });
+          }
+
+          // Block clicks on locked rows
+          if (locked > 0) {
+            $(table.table().node()).on('click', 'td', function() {
+              var cellInfo = table.cell(this).index();
+              if (cellInfo && cellInfo.row < locked) {
+                return false;
+              }
+            });
+          }
+        }
+      ", changed_js, num_locked_rows))
+
       DT::datatable(
         display_data,
-        rownames = FALSE,
-        selection = "none",
-        editable = list(
-          target = "cell",
-          disable = list(rows = seq_len(num_locked_rows))
-        ),
-        options = list(
-          dom = "t",
-          ordering = FALSE,
-          paging = FALSE,
-          info = FALSE,
-          searching = FALSE
+        rownames    = FALSE,
+        selection   = "none",
+        class       = "table table-striped table-hover table-bordered",
+        editable    = editable_cfg,
+        options     = list(
+          dom       = "t",
+          ordering  = FALSE,
+          paging    = FALSE,
+          info      = FALSE,
+          searching = FALSE,
+          initComplete = init_js
         )
       ) |>
-        DT::formatRound(columns = which(vapply(display_data, is.numeric, logical(1))), digits = 2)
+        DT::formatRound(
+          columns = which(vapply(display_data, is.numeric, logical(1))),
+          digits  = 2
+        )
     })
 
+    # Replace data on committed change (avoids full re-render)
     shiny::observeEvent(state$committed, {
       display_data <- if (isTRUE(input$batch_mode)) state$in_editor else state$committed
-      DT::replaceData(table_proxy, display_data, resetPaging = FALSE)
+      DT::replaceData(table_proxy, display_data, resetPaging = FALSE, rownames = FALSE)
     }, ignoreInit = TRUE)
 
+    # Replace data when editor buffer changes in batch mode
     shiny::observeEvent(state$in_editor, {
       if (isTRUE(input$batch_mode)) {
-        DT::replaceData(table_proxy, state$in_editor, resetPaging = FALSE)
+        DT::replaceData(table_proxy, state$in_editor, resetPaging = FALSE, rownames = FALSE)
       }
     }, ignoreInit = TRUE)
 
-    # -------------------------
-    # Cell edit handler
-    # -------------------------
     shiny::observeEvent(input$table_cell_edit, {
 
-      info <- input$table_cell_edit
-      row_idx <- info$row
-      col_idx <- info$col + 1
+      info      <- input$table_cell_edit
+      row_idx   <- info$row          # 1-based from DT
+      col_idx   <- info$col + 1L     # DT sends 0-based col; +1 for R indexing
       new_value <- info$value
 
+      # Guard: locked row
       if (row_idx <= num_locked_rows) {
         shiny::showNotification("This row is read-only", type = "warning", duration = 2)
-        DT::replaceData(table_proxy, state$committed)
+        DT::replaceData(table_proxy, state$committed, resetPaging = FALSE, rownames = FALSE)
         return()
       }
 
+      # Guard: already computing
       if (state$is_computing) {
         shiny::showNotification("Processing. Please wait", type = "message", duration = 2)
         DT::replaceData(
           table_proxy,
-          if (isTRUE(input$batch_mode)) state$in_editor else state$committed
+          if (isTRUE(input$batch_mode)) state$in_editor else state$committed,
+          resetPaging = FALSE, rownames = FALSE
         )
         return()
       }
 
+      # ── Batch mode: buffer the edit, don't run link_fn yet ──
       if (isTRUE(input$batch_mode)) {
 
-        buf <- state$in_editor
+        buf     <- state$in_editor
         old_val <- buf[row_idx, col_idx]
 
         buf[row_idx, col_idx] <-
           if (is.numeric(old_val)) as.numeric(new_value) else new_value
 
-        state$in_editor <- buf
-        state$last_status <- "buffered"
+        state$in_editor   <- buf
+        state$last_status  <- "buffered"
         state$last_message <- sprintf("Row %d queued", row_idx)
 
-        DT::replaceData(table_proxy, buf)
+        DT::replaceData(table_proxy, buf, resetPaging = FALSE, rownames = FALSE)
         return()
       }
 
-      # Immediate mode
+      # ── Immediate mode: run link_fn async ──
       state$is_computing <- TRUE
       shinyjs::addClass(session$ns("busy"), "show")
 
       data_with_edit <- state$committed
-      old_val <- data_with_edit[row_idx, col_idx]
+      old_val        <- data_with_edit[row_idx, col_idx]
 
       data_with_edit[row_idx, col_idx] <-
         if (is.numeric(old_val)) as.numeric(new_value) else new_value
 
-      edits <- make_edits_df(row_idx, col_idx)
-
-      exec_token <- generate_token()
+      edits       <- make_edits_df(row_idx, col_idx)
+      exec_token  <- generate_token()
       state$active_token <- exec_token
 
-      # FIX 1: replace %...>% with promises::then
       promises::then(
         with_async_safety(
           {
@@ -221,22 +307,26 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
         ),
         onFulfilled = function(result) {
 
+          # Stale execution guard
           if (!is_token_active(exec_token, state$active_token)) {
             state$is_computing <- FALSE
-            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
+            shinyjs::removeClass(session$ns("busy"), "show")
             return(NULL)
           }
 
-          if (!is.list(result) || !("data" %in% names(result)) || !("status" %in% names(result))) {
+          # Validate result shape
+          if (!is.list(result) ||
+              !("data"   %in% names(result)) ||
+              !("status" %in% names(result))) {
             state$is_computing <- FALSE
-            state$last_status <- "error"
-            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
+            state$last_status  <- "error"
+            shinyjs::removeClass(session$ns("busy"), "show")
             shiny::showNotification("Invalid link_fn result", type = "error")
-            DT::replaceData(table_proxy, state$committed)
+            DT::replaceData(table_proxy, state$committed, resetPaging = FALSE, rownames = FALSE)
             return(NULL)
           }
 
-          state$last_status <- result$status
+          state$last_status  <- result$status
           state$last_message <- result$message %||% ""
 
           switch(result$status,
@@ -246,12 +336,15 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
                  },
                  "invalid" = {
                    state$in_editor <- state$committed
+                   DT::replaceData(table_proxy, state$committed, resetPaging = FALSE, rownames = FALSE)
                  },
                  "not_possible" = {
                    state$in_editor <- state$committed
+                   DT::replaceData(table_proxy, state$committed, resetPaging = FALSE, rownames = FALSE)
                  },
                  "unchanged" = {
                    state$in_editor <- state$committed
+                   DT::replaceData(table_proxy, state$committed, resetPaging = FALSE, rownames = FALSE)
                  }
           )
 
@@ -261,110 +354,10 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       )
     })
 
-    # -------------------------
-    # Commit handler
-    # -------------------------
-    shiny::observeEvent(input$commit, {
-
-      if (!isTRUE(input$batch_mode) || state$is_computing) return()
-
-      changes <- detect_changes(
-        state$committed,
-        state$in_editor,
-        num_locked_rows,
-        tolerance
-      )
-
-      if (nrow(changes) == 0) {
-        shiny::showNotification("No changes", type = "message", duration = 2)
-        return()
-      }
-
-      state$is_computing <- TRUE
-      shinyjs::addClass(session$ns("busy"), "show")
-
-      exec_token <- generate_token()
-      state$active_token <- exec_token
-
-      # FIX 1
-      promises::then(
-        with_async_safety(
-          {
-            link_fn(state$in_editor, changes)
-          },
-          session = session
-        ),
-        onFulfilled = function(result) {
-
-          if (!is_token_active(exec_token, state$active_token)) {
-            state$is_computing <- FALSE
-            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
-            return(NULL)
-          }
-
-          # FIX 3: enforce full contract
-          if (!is.list(result) || !("data" %in% names(result)) || !("status" %in% names(result))) {
-            state$is_computing <- FALSE
-            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
-            shiny::showNotification("Invalid link_fn result", type = "error")
-            DT::replaceData(table_proxy, state$committed)
-            return(NULL)
-          }
-
-          state$last_status <- result$status
-
-          if (result$status == "success") {
-            state$committed <- result$data
-            state$in_editor <- result$data
-          } else {
-            state$in_editor <- state$committed
-          }
-
-          state$is_computing <- FALSE
-          shinyjs::removeClass(session$ns("busy"), "show")
-        }
-      )
-    })
-
-    output$status_text <- shiny::renderUI({
-
-      emoji <- switch(
-        state$last_status,
-        "ready" = "OK",
-        "success" = "OK",
-        "buffered" = "EDIT",
-        "invalid" = "WARN",
-        "error" = "ERR",
-        "?"
-      )
-
-      color <- switch(
-        state$last_status,
-        "success" = "#4CAF50",
-        "buffered" = "#2196F3",
-        "invalid" = "#FF9800",
-        "error" = "#f44336",
-        "#666"
-      )
-
-      msg <-
-        if (nchar(state$last_message) > 0) {
-          sprintf("%s %s (%s)", emoji, state$last_status, state$last_message)
-        } else {
-          sprintf("%s %s", emoji, state$last_status)
-        }
-
-      shiny::HTML(sprintf(
-        '<span style="color: %s; font-size: 0.9em;">%s</span>',
-        color,
-        msg
-      ))
-    })
-
     shiny::reactive(state$committed)
   })
 }
 
 `%||%` <- function(x, y) {
-  if (is.null(x) || is.na(x)) y else x
+  if (is.null(x) || (length(x) == 1L && is.na(x))) y else x
 }

@@ -8,31 +8,33 @@ devtools::load_all(".")
 
 # Linking Function
 link_sum_100 <- function(data, edits) {
+
+  Sys.sleep(5)
   row_idx <- edits$row[1]
   col_idx <- edits$col[1]
   new_value <- as.numeric(data[row_idx, col_idx])
-  
+
   if (is.na(new_value)) {
     return(list(data = data, status = "invalid", message = "Must be numeric"))
   }
-  
+
   if (new_value < 0 || new_value > 100) {
     return(list(data = data, status = "invalid", message = "Must be 0-100"))
   }
-  
+
   data[row_idx, col_idx] <- new_value
-  
+
   numeric_cols <- which(sapply(data, is.numeric))
   other_cols <- setdiff(numeric_cols, col_idx)
   other_sum <- sum(data[row_idx, other_cols], na.rm = TRUE)
-  
+
   if (other_sum <= 0) {
     data[row_idx, other_cols] <- (100 - new_value) / length(other_cols)
   } else {
     scale_factor <- (100 - new_value) / other_sum
     data[row_idx, other_cols] <- data[row_idx, other_cols] * scale_factor
   }
-  
+
   return(list(data = data, status = "success", message = "Rebalanced"))
 }
 
@@ -63,7 +65,7 @@ ui <- fluidPage(
 # Server
 server <- function(input, output, session) {
   reactive_data <- linked_cells_server("main_table", sample_data, 8, link_sum_100)
-  
+
   output$row_sums <- renderPrint({
     data <- reactive_data()
     numeric_cols <- which(sapply(data, is.numeric))
