@@ -6,39 +6,61 @@ library(shiny)
 library(DT)
 devtools::load_all(".")
 
-# Linking Function
+# ------------------------------------------------------------------
+# Linking function: rebalance edited rows so numeric columns sum to 100.
+#
+# In immediate mode, edits has one row.
+# In batch mode, edits can have multiple rows/cols.
+# Either way, every edited row gets rebalanced.
+# ------------------------------------------------------------------
 link_sum_100 <- function(data, edits) {
 
-  Sys.sleep(5)
-  row_idx <- edits$row[1]
-  col_idx <- edits$col[1]
-  new_value <- as.numeric(data[row_idx, col_idx])
+  numeric_cols <- which(vapply(data, is.numeric, logical(1)))
+  edited_rows  <- unique(edits$row)
 
-  if (is.na(new_value)) {
-    return(list(data = data, status = "invalid", message = "Must be numeric"))
+  for (r in edited_rows) {
+
+    # Identify which column(s) the user touched in this row
+    edited_cols <- edits$col[edits$row == r]
+
+    # Validate every edited cell
+    for (ec in edited_cols) {
+      val <- as.numeric(data[r, ec])
+      if (is.na(val)) {
+        return(list(data = data, status = "invalid",
+                    message = sprintf("Row %d: must be numeric", r)))
+      }
+      if (val < 0 || val > 100) {
+        return(list(data = data, status = "invalid",
+                    message = sprintf("Row %d: must be 0-100", r)))
+      }
+    }
+
+    # Rebalance: scale the non-edited numeric columns so the row sums to 100
+    other_cols <- setdiff(numeric_cols, edited_cols)
+    edited_sum <- sum(data[r, edited_cols], na.rm = TRUE)
+    other_sum  <- sum(data[r, other_cols],  na.rm = TRUE)
+    remainder  <- 100 - edited_sum
+
+    if (length(other_cols) == 0L) next
+
+    if (other_sum <= 0) {
+      data[r, other_cols] <- remainder / length(other_cols)
+    } else {
+      data[r, other_cols] <- data[r, other_cols] * (remainder / other_sum)
+    }
   }
 
-  if (new_value < 0 || new_value > 100) {
-    return(list(data = data, status = "invalid", message = "Must be 0-100"))
-  }
+  # Simulate heavy computation (only on the success path)
+  Sys.sleep(2)
 
-  data[row_idx, col_idx] <- new_value
-
-  numeric_cols <- which(sapply(data, is.numeric))
-  other_cols <- setdiff(numeric_cols, col_idx)
-  other_sum <- sum(data[row_idx, other_cols], na.rm = TRUE)
-
-  if (other_sum <= 0) {
-    data[row_idx, other_cols] <- (100 - new_value) / length(other_cols)
-  } else {
-    scale_factor <- (100 - new_value) / other_sum
-    data[row_idx, other_cols] <- data[row_idx, other_cols] * scale_factor
-  }
-
-  return(list(data = data, status = "success", message = "Rebalanced"))
+  list(data = data, status = "success",
+       message = paste("Rebalanced", length(edited_rows), "row(s)"))
 }
 
-# Data
+# ------------------------------------------------------------------
+# Sample data (10 rows, each row sums to 100)
+# ------------------------------------------------------------------
 sample_data <- data.frame(
   Category = paste0("Cat_", 1:10),
   ColA = c(20, 25, 15, 30, 18, 22, 28, 19, 25, 30),
@@ -48,30 +70,47 @@ sample_data <- data.frame(
   stringsAsFactors = FALSE
 )
 
+# ------------------------------------------------------------------
 # UI
-ui <- fluidPage(
-  titlePanel("linkedCells: Row Sum = 100"),
-  sidebarLayout(
-    sidebarPanel(width = 3,
-      h4("Edit rows 9-10"),
-      p("Other columns auto-adjust"),
-      hr(),
-      verbatimTextOutput("row_sums")
+# ------------------------------------------------------------------
+ui <- shiny::fluidPage(
+  shiny::titlePanel("linkedCells: Row Sum = 100"),
+  shiny::sidebarLayout(
+    shiny::sidebarPanel(
+      width = 3,
+      shiny::h4("Edit rows 9-10"),
+      shiny::p("Rows 1-8 are locked. Edit any numeric cell in rows 9 or 10."),
+      shiny::p("The other columns auto-adjust so the row still sums to 100."),
+      shiny::hr(),
+      shiny::verbatimTextOutput("row_sums")
     ),
-    mainPanel(width = 9, linked_cells_ui("main_table"))
+    shiny::mainPanel(
+      width = 9,
+      linked_cells_ui("main_table")
+    )
   )
 )
 
+# ------------------------------------------------------------------
 # Server
+# ------------------------------------------------------------------
 server <- function(input, output, session) {
-  reactive_data <- linked_cells_server("main_table", sample_data, 8, link_sum_100)
 
-  output$row_sums <- renderPrint({
-    data <- reactive_data()
-    numeric_cols <- which(sapply(data, is.numeric))
-    sums <- rowSums(data[, numeric_cols], na.rm = TRUE)
-    data.frame(Row = 1:nrow(data), Sum = round(sums, 2))
+  reactive_data <- linked_cells_server(
+    "main_table",
+    data                 = sample_data,
+    num_locked_rows      = 8,
+    link_fn              = link_sum_100,
+    enable_batch_editing = TRUE,
+    enable_undo_redo     = FALSE
+  )
+
+  output$row_sums <- shiny::renderPrint({
+    d <- reactive_data()
+    numeric_cols <- which(vapply(d, is.numeric, logical(1)))
+    sums <- rowSums(d[, numeric_cols], na.rm = TRUE)
+    data.frame(Row = seq_len(nrow(d)), Sum = round(sums, 2))
   })
 }
 
-shinyApp(ui, server)
+shiny::shinyApp(ui, server)

@@ -5,6 +5,10 @@
 
 #' LinkedCells UI Component
 #'
+#' Creates the table and a placeholder for optional controls below it.
+#' Which controls appear is determined by the server-side flags
+#' (enable_batch_editing, enable_undo_redo) passed to linked_cells_server.
+#'
 #' @param id Module ID (character string)
 #'
 #' @export
@@ -18,15 +22,6 @@ linked_cells_ui <- function(id) {
 
     shiny::tags$head(
       shiny::tags$style(shiny::HTML(sprintf("
-
-        /* -- Controls bar -- */
-        #%s {
-          padding: 12px;
-          background: #f5f5f5;
-          border-bottom: 1px solid #ddd;
-          margin-bottom: 12px;
-          border-radius: 4px;
-        }
 
         /* -- Flash animation: yellow pulse then fade (3.5s) -- */
         @keyframes lc-flash {
@@ -43,7 +38,6 @@ linked_cells_ui <- function(id) {
         #%s table.dataTable th {
           border-right: 1px solid #cce0f0;
         }
-
         #%s table.dataTable {
           border-left:  1px solid #cce0f0;
           border-right: 1px solid #cce0f0;
@@ -58,7 +52,7 @@ linked_cells_ui <- function(id) {
           border-right:  1px solid #AED6F1 !important;
         }
 
-        /* -- Locked rows: greyed out, blocked cursor -- */
+        /* -- Locked rows -- */
         #%s table.dataTable tbody tr.lc-locked td {
           background-color: #F4F6F7 !important;
           color: #7F8C8D !important;
@@ -66,37 +60,50 @@ linked_cells_ui <- function(id) {
           font-style: italic;
         }
 
+        /* -- Controls bar below table -- */
+        .lc-controls {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          margin-top: 8px;
+          background: #f8f9fa;
+          border: 1px solid #e0e0e0;
+          border-radius: 4px;
+        }
+
+        /* Kill default Shiny checkbox margins so it lines up */
+        .lc-controls .form-group {
+          margin-bottom: 0;
+        }
+        .lc-controls .checkbox {
+          margin-top: 0;
+          margin-bottom: 0;
+        }
+
+        /* Thin vertical separator between control groups */
+        .lc-divider {
+          width: 1px;
+          height: 24px;
+          background: #ccc;
+        }
+
       ",
-                                            ns("controls"),   # 1  controls bar
-                                            ns("table"),      # 2  flash animation
-                                            ns("table"),      # 3  td border
-                                            ns("table"),      # 4  th border
-                                            ns("table"),      # 5  outer border
-                                            ns("table"),      # 6  thead blue
-                                            ns("table")       # 7  locked rows
+                                            ns("table"),    # 1  flash
+                                            ns("table"),    # 2  td border
+                                            ns("table"),    # 3  th border
+                                            ns("table"),    # 4  outer border
+                                            ns("table"),    # 5  thead
+                                            ns("table")     # 6  locked rows
       )))
     ),
 
-    shiny::div(
-      id = ns("controls"),
-      shiny::fluidRow(
-        shiny::column(
-          3,
-          shiny::checkboxInput(ns("batch_mode"), "Batch edit mode", value = FALSE)
-        ),
-        shiny::column(
-          3,
-          shiny::uiOutput(ns("commit_button_ui"))
-        ),
-        shiny::column(
-          6,
-          shiny::uiOutput(ns("status_text")),
-          style = "text-align: right; padding-top: 7px;"
-        )
-      )
-    ),
+    # ---- Table ----
+    DT::DTOutput(ns("table")),
 
-    DT::DTOutput(ns("table"))
+    # ---- Controls placeholder (server decides what goes here) ----
+    shiny::uiOutput(ns("controls_ui"))
   )
 }
 
@@ -108,11 +115,21 @@ linked_cells_ui <- function(id) {
 #' @param num_locked_rows Number of read-only rows at the top (default 0)
 #' @param link_fn Function(data, edits) returning list(data, status, message)
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
+#' @param enable_batch_editing Show "Edit multiple cells" checkbox and commit
+#'   button below the table. Default FALSE.
+#' @param enable_undo_redo Show one-step Undo / Redo icon buttons below the
+#'   table. Default FALSE.
 #'
 #' @return A reactive returning the current committed data.frame
 #'
 #' @export
-linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, tolerance = 0.1) {
+linked_cells_server <- function(id,
+                                data,
+                                num_locked_rows = 0,
+                                link_fn,
+                                tolerance = 0.1,
+                                enable_batch_editing = FALSE,
+                                enable_undo_redo = FALSE) {
 
   if (!is.data.frame(data)) stop("data must be a dataframe")
   if (!is.function(link_fn)) stop("link_fn must be a function")
@@ -121,6 +138,8 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
 
     linked_cells_init()
 
+    has_controls <- isTRUE(enable_batch_editing) || isTRUE(enable_undo_redo)
+
     # ---- Reactive state ----
     state <- shiny::reactiveValues(
       committed    = data,
@@ -128,7 +147,9 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       is_computing = FALSE,
       active_token = 0,
       last_status  = "ready",
-      last_message = ""
+      last_message = "",
+      undo_state   = NULL,
+      redo_state   = NULL
     )
 
     table_proxy  <- DT::dataTableProxy(session$ns("table"), session = session)
@@ -158,10 +179,14 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
     }
 
     notify <- function(msg, type = "message", duration = 3) {
-      shiny::showNotification(msg, type = type, duration = duration, session = session)
+      shiny::showNotification(msg, type = type, duration = duration,
+                              session = session)
     }
 
-    # Build 0-based cell list for JS from two dataframes
+    is_batch_on <- function() {
+      isTRUE(enable_batch_editing) && isTRUE(input$batch_mode)
+    }
+
     build_flash_cells <- function(old_df, new_df) {
       ch <- detect_changes(old_df, new_df, num_locked_rows, tolerance)
       if (nrow(ch) == 0L) return(list())
@@ -171,7 +196,6 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       })
     }
 
-    # Inject JS to add linked-flash class on specified cells
     fire_flash <- function(cells_0based) {
       if (length(cells_0based) == 0L) return(invisible(NULL))
       cells_json <- jsonlite::toJSON(cells_0based, auto_unbox = TRUE)
@@ -196,30 +220,28 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       ", dt_dom_id_js, cells_json))
     }
 
-    # Replace table data and optionally flash changed cells
     update_table <- function(display_data, flash_cells = list()) {
-      DT::replaceData(table_proxy, display_data, resetPaging = FALSE, rownames = FALSE)
+      DT::replaceData(table_proxy, display_data,
+                      resetPaging = FALSE, rownames = FALSE)
       if (length(flash_cells) > 0L) fire_flash(flash_cells)
     }
 
-    # Process link_fn result inside a promise callback
     handle_result <- function(result, exec_token, committed_snapshot) {
 
-      # Stale execution guard
       if (!is_token_active(exec_token, state$active_token)) {
         state$is_computing <- FALSE
         hide_busy()
         return(NULL)
       }
 
-      # Shape validation
       if (!is.list(result) ||
           !("data"   %in% names(result)) ||
           !("status" %in% names(result))) {
         state$is_computing <- FALSE
         state$last_status  <- "error"
         hide_busy()
-        notify("link_fn returned an invalid result.", type = "error", duration = 5)
+        notify("link_fn returned an invalid result.",
+               type = "error", duration = 5)
         update_table(state$committed)
         return(NULL)
       }
@@ -231,6 +253,10 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
 
              "success" = {
                flash <- build_flash_cells(committed_snapshot, result$data)
+               if (isTRUE(enable_undo_redo)) {
+                 state$undo_state <- committed_snapshot
+                 state$redo_state <- NULL
+               }
                state$committed <- result$data
                state$in_editor <- result$data
                update_table(result$data, flash)
@@ -241,13 +267,15 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
              "invalid" = {
                state$in_editor <- state$committed
                update_table(state$committed)
-               notify(result$message %||% "Invalid value.", type = "warning", duration = 4)
+               notify(result$message %||% "Invalid value.",
+                      type = "warning", duration = 4)
              },
 
              "not_possible" = {
                state$in_editor <- state$committed
                update_table(state$committed)
-               notify(result$message %||% "Change not possible.", type = "warning", duration = 4)
+               notify(result$message %||% "Change not possible.",
+                      type = "warning", duration = 4)
              },
 
              "unchanged" = {
@@ -261,19 +289,110 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
     }
 
     # ================================================================
-    # Commit button UI (batch mode only)
+    # Server-rendered controls (the single source of truth)
     # ================================================================
 
-    output$commit_button_ui <- shiny::renderUI({
-      if (isTRUE(input$batch_mode)) {
-        shiny::actionButton(
-          session$ns("commit"),
-          if (state$is_computing) "Processing..." else "Commit Changes",
-          class    = if (state$is_computing) "btn-warning btn-sm" else "btn-primary btn-sm",
-          disabled = state$is_computing
-        )
+    output$controls_ui <- shiny::renderUI({
+      if (!has_controls) return(NULL)
+
+      parts <- list()
+
+      if (isTRUE(enable_undo_redo)) {
+        parts <- c(parts, list(
+          shiny::tags$button(
+            id = session$ns("undo"),
+            type = "button",
+            class = "btn btn-default btn-sm action-button",
+            title = "Undo last change",
+            shiny::icon("rotate-left")
+          ),
+          shiny::tags$button(
+            id = session$ns("redo"),
+            type = "button",
+            class = "btn btn-default btn-sm action-button",
+            title = "Redo last undone change",
+            shiny::icon("rotate-right")
+          )
+        ))
+        if (isTRUE(enable_batch_editing)) {
+          parts <- c(parts, list(shiny::div(class = "lc-divider")))
+        }
       }
+
+      if (isTRUE(enable_batch_editing)) {
+        parts <- c(parts, list(
+          shiny::checkboxInput(
+            session$ns("batch_mode"),
+            "Edit multiple cells",
+            value = FALSE
+          ),
+          shiny::uiOutput(session$ns("commit_button_ui"),
+                          style = "display: inline-block;")
+        ))
+      }
+
+      shiny::div(class = "lc-controls", parts)
     })
+
+    # ================================================================
+    # Undo / Redo
+    # ================================================================
+
+    if (isTRUE(enable_undo_redo)) {
+
+      shiny::observe({
+        can_undo <- !is.null(state$undo_state) && !state$is_computing
+        can_redo <- !is.null(state$redo_state) && !state$is_computing
+        shinyjs::toggleState(session$ns("undo"), condition = can_undo)
+        shinyjs::toggleState(session$ns("redo"), condition = can_redo)
+      })
+
+      shiny::observeEvent(input$undo, {
+        if (is.null(state$undo_state) || state$is_computing) return()
+
+        old_committed <- state$committed
+        new_committed <- state$undo_state
+        flash <- build_flash_cells(old_committed, new_committed)
+
+        state$redo_state <- old_committed
+        state$undo_state <- NULL
+        state$committed  <- new_committed
+        state$in_editor  <- new_committed
+        update_table(new_committed, flash)
+      })
+
+      shiny::observeEvent(input$redo, {
+        if (is.null(state$redo_state) || state$is_computing) return()
+
+        old_committed <- state$committed
+        new_committed <- state$redo_state
+        flash <- build_flash_cells(old_committed, new_committed)
+
+        state$undo_state <- old_committed
+        state$redo_state <- NULL
+        state$committed  <- new_committed
+        state$in_editor  <- new_committed
+        update_table(new_committed, flash)
+      })
+    }
+
+    # ================================================================
+    # Batch commit button UI
+    # ================================================================
+
+    if (isTRUE(enable_batch_editing)) {
+      output$commit_button_ui <- shiny::renderUI({
+        if (isTRUE(input$batch_mode)) {
+          shiny::actionButton(
+            session$ns("commit"),
+            shiny::tagList(shiny::icon("check"), "Commit"),
+            class = if (state$is_computing) "btn-warning btn-sm"
+            else "btn-primary btn-sm",
+            disabled = if (state$is_computing) "disabled" else NULL
+          )
+        }
+      })
+    }
 
     # ================================================================
     # Initial table render
@@ -281,17 +400,13 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
 
     output$table <- DT::renderDT({
 
-      display_data <- if (isTRUE(input$batch_mode)) state$in_editor else state$committed
+      display_data <- if (is_batch_on()) state$in_editor else state$committed
 
       editable_cfg <- list(target = "cell")
       if (num_locked_rows > 0L) {
         editable_cfg$disable <- list(rows = seq_len(num_locked_rows))
       }
 
-      # initComplete JS:
-      #   - stores DataTables api on window._lcApi[domId] for flash calls
-      #   - marks locked rows with lc-locked class (re-applies on draw)
-      #   - hard-blocks dblclick/mousedown on locked rows
       init_js <- DT::JS(sprintf("
         function(settings, json) {
           var api    = this.api();
@@ -356,23 +471,21 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       col_idx   <- info$col + 1L
       new_value <- info$value
 
-      # Guard: locked row
       if (row_idx <= num_locked_rows) {
         update_table(state$committed)
         return()
       }
 
-      # Guard: already computing
       if (state$is_computing) {
         notify("Still processing previous edit, please wait.", type = "warning")
         update_table(
-          if (isTRUE(input$batch_mode)) state$in_editor else state$committed
+          if (is_batch_on()) state$in_editor else state$committed
         )
         return()
       }
 
-      # ---- Batch mode: buffer only, no link_fn yet ----
-      if (isTRUE(input$batch_mode)) {
+      # ---- Batch mode: buffer only ----
+      if (is_batch_on()) {
         buf     <- state$in_editor
         old_val <- buf[row_idx, col_idx]
         buf[row_idx, col_idx] <-
@@ -384,7 +497,7 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
         return()
       }
 
-      # ---- Immediate mode: run link_fn async ----
+      # ---- Immediate mode: link_fn async ----
       state$is_computing <- TRUE
       show_busy()
 
@@ -413,48 +526,50 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
     # Batch commit handler
     # ================================================================
 
-    shiny::observeEvent(input$commit, {
-      if (!isTRUE(input$batch_mode)) return()
+    if (isTRUE(enable_batch_editing)) {
+      shiny::observeEvent(input$commit, {
+        if (!is_batch_on()) return()
 
-      if (state$is_computing) {
-        notify("Already processing, please wait.", type = "warning")
-        return()
-      }
-
-      if (identical(state$in_editor, state$committed)) {
-        notify("No changes to commit.", type = "message")
-        return()
-      }
-
-      state$is_computing <- TRUE
-      show_busy()
-
-      changes <- detect_changes(state$committed, state$in_editor, num_locked_rows, tolerance)
-      edits <- if (nrow(changes) > 0L) {
-        data.frame(
-          row = changes$row,
-          col = changes$col,
-          stringsAsFactors = FALSE
-        )
-      } else {
-        make_edits_df(integer(0), integer(0))
-      }
-
-      data_to_send       <- state$in_editor
-      exec_token         <- generate_token()
-      state$active_token <- exec_token
-      committed_snapshot <- state$committed
-
-      promises::then(
-        with_async_safety(
-          { link_fn(data_to_send, edits) },
-          session = session
-        ),
-        onFulfilled = function(result) {
-          handle_result(result, exec_token, committed_snapshot)
+        if (state$is_computing) {
+          notify("Already processing, please wait.", type = "warning")
+          return()
         }
-      )
-    })
+
+        if (identical(state$in_editor, state$committed)) {
+          notify("No changes to commit.", type = "message")
+          return()
+        }
+
+        state$is_computing <- TRUE
+        show_busy()
+
+        changes <- detect_changes(state$committed, state$in_editor,
+                                  num_locked_rows, tolerance)
+
+        edits <- if (nrow(changes) > 0L) {
+          data.frame(row = changes$row,
+                     col = changes$col,
+                     stringsAsFactors = FALSE)
+        } else {
+          make_edits_df(integer(0), integer(0))
+        }
+
+        data_to_send       <- state$in_editor
+        exec_token         <- generate_token()
+        state$active_token <- exec_token
+        committed_snapshot <- state$committed
+
+        promises::then(
+          with_async_safety(
+            { link_fn(data_to_send, edits) },
+            session = session
+          ),
+          onFulfilled = function(result) {
+            handle_result(result, exec_token, committed_snapshot)
+          }
+        )
+      })
+    }
 
     # ================================================================
     # Return reactive committed data
