@@ -63,7 +63,7 @@ sample_data <- data.frame(
 )
 
 # ------------------------------------------------------------------
-# UI
+# UI  (flags live here only -- server auto-detects)
 # ------------------------------------------------------------------
 ui <- shiny::fluidPage(
   shiny::titlePanel("linkedCells: Row Sum = 100"),
@@ -81,24 +81,22 @@ ui <- shiny::fluidPage(
       linked_cells_ui(
         "main_table",
         enable_batch_editing = TRUE,
-        enable_undo_redo     = TRUE
+        enable_undo_redo     = FALSE
       )
     )
   )
 )
 
 # ------------------------------------------------------------------
-# Server
+# Server  (no flags needed -- UI controls what appears)
 # ------------------------------------------------------------------
 server <- function(input, output, session) {
 
   reactive_data <- linked_cells_server(
     "main_table",
-    data                 = sample_data,
-    num_locked_rows      = 8,
-    link_fn              = link_sum_100,
-    enable_batch_editing = FALSE,
-    enable_undo_redo     = FALSE
+    data            = sample_data,
+    num_locked_rows = 8,
+    link_fn         = link_sum_100
   )
 
   output$row_sums <- shiny::renderPrint({

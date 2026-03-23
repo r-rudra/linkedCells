@@ -144,8 +144,6 @@ linked_cells_ui <- function(id,
               "Edit multiple cells",
               value = FALSE
             ),
-            # Commit button: always in DOM, hidden initially.
-            # Toggled by pure JS below (no server round-trip).
             shiny::span(
               id = ns("commit_wrap"),
               style = "display: none;",
@@ -155,8 +153,6 @@ linked_cells_ui <- function(id,
                 class = "btn-primary btn-sm"
               )
             ),
-            # Pure JS: toggle commit button when checkbox changes.
-            # No shinyjs, no conditionalPanel, no server involvement.
             shiny::tags$script(shiny::HTML(sprintf(
               "$(document).on('change', '#%s', function() {
                  $('#%s').toggle(this.checked);
@@ -173,13 +169,15 @@ linked_cells_ui <- function(id,
 
 #' LinkedCells Server Module
 #'
+#' All optional features (batch editing, undo/redo) are controlled solely
+#' by the flags on linked_cells_ui. The server automatically detects which
+#' UI elements exist and responds accordingly -- no flags needed here.
+#'
 #' @param id Module namespace id
 #' @param data Initial data.frame
 #' @param num_locked_rows Number of read-only rows at the top (default 0)
 #' @param link_fn Function(data, edits) returning list(data, status, message)
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
-#' @param enable_batch_editing Must match linked_cells_ui. Default FALSE.
-#' @param enable_undo_redo Must match linked_cells_ui. Default FALSE.
 #'
 #' @return A reactive returning the current committed data.frame
 #'
@@ -188,9 +186,7 @@ linked_cells_server <- function(id,
                                 data,
                                 num_locked_rows = 0,
                                 link_fn,
-                                tolerance = 0.1,
-                                enable_batch_editing = FALSE,
-                                enable_undo_redo = FALSE) {
+                                tolerance = 0.1) {
 
   if (!is.data.frame(data)) stop("data must be a dataframe")
   if (!is.function(link_fn)) stop("link_fn must be a function")
@@ -242,8 +238,9 @@ linked_cells_server <- function(id,
                               session = session)
     }
 
+    # Batch mode is on only when the checkbox exists AND is checked
     is_batch_on <- function() {
-      isTRUE(enable_batch_editing) && isTRUE(input$batch_mode)
+      isTRUE(input$batch_mode)
     }
 
     build_flash_cells <- function(old_df, new_df) {
@@ -312,10 +309,8 @@ linked_cells_server <- function(id,
 
              "success" = {
                flash <- build_flash_cells(committed_snapshot, result$data)
-               if (isTRUE(enable_undo_redo)) {
-                 state$undo_state <- committed_snapshot
-                 state$redo_state <- NULL
-               }
+               state$undo_state <- committed_snapshot
+               state$redo_state <- NULL
                state$committed <- result$data
                state$in_editor <- result$data
                update_table(result$data, flash)
@@ -349,48 +344,48 @@ linked_cells_server <- function(id,
 
     # ================================================================
     # Undo / Redo
+    # (Observers always registered. If buttons don't exist in UI,
+    #  the observeEvents simply never fire. jQuery on missing
+    #  elements is harmless.)
     # ================================================================
 
-    if (isTRUE(enable_undo_redo)) {
+    shiny::observe({
+      can_undo <- !is.null(state$undo_state) && !state$is_computing
+      can_redo <- !is.null(state$redo_state) && !state$is_computing
+      shinyjs::runjs(sprintf(
+        "$('#%s').prop('disabled',%s); $('#%s').prop('disabled',%s);",
+        session$ns("undo"), if (can_undo) "false" else "true",
+        session$ns("redo"), if (can_redo) "false" else "true"
+      ))
+    })
 
-      shiny::observe({
-        can_undo <- !is.null(state$undo_state) && !state$is_computing
-        can_redo <- !is.null(state$redo_state) && !state$is_computing
-        shinyjs::runjs(sprintf(
-          "$('#%s').prop('disabled',%s); $('#%s').prop('disabled',%s);",
-          session$ns("undo"), if (can_undo) "false" else "true",
-          session$ns("redo"), if (can_redo) "false" else "true"
-        ))
-      })
+    shiny::observeEvent(input$undo, {
+      if (is.null(state$undo_state) || state$is_computing) return()
 
-      shiny::observeEvent(input$undo, {
-        if (is.null(state$undo_state) || state$is_computing) return()
+      old_committed <- state$committed
+      new_committed <- state$undo_state
+      flash <- build_flash_cells(old_committed, new_committed)
 
-        old_committed <- state$committed
-        new_committed <- state$undo_state
-        flash <- build_flash_cells(old_committed, new_committed)
+      state$redo_state <- old_committed
+      state$undo_state <- NULL
+      state$committed  <- new_committed
+      state$in_editor  <- new_committed
+      update_table(new_committed, flash)
+    })
 
-        state$redo_state <- old_committed
-        state$undo_state <- NULL
-        state$committed  <- new_committed
-        state$in_editor  <- new_committed
-        update_table(new_committed, flash)
-      })
+    shiny::observeEvent(input$redo, {
+      if (is.null(state$redo_state) || state$is_computing) return()
 
-      shiny::observeEvent(input$redo, {
-        if (is.null(state$redo_state) || state$is_computing) return()
+      old_committed <- state$committed
+      new_committed <- state$redo_state
+      flash <- build_flash_cells(old_committed, new_committed)
 
-        old_committed <- state$committed
-        new_committed <- state$redo_state
-        flash <- build_flash_cells(old_committed, new_committed)
-
-        state$undo_state <- old_committed
-        state$redo_state <- NULL
-        state$committed  <- new_committed
-        state$in_editor  <- new_committed
-        update_table(new_committed, flash)
-      })
-    }
+      state$undo_state <- old_committed
+      state$redo_state <- NULL
+      state$committed  <- new_committed
+      state$in_editor  <- new_committed
+      update_table(new_committed, flash)
+    })
 
     # ================================================================
     # Initial table render
@@ -526,52 +521,51 @@ linked_cells_server <- function(id,
 
     # ================================================================
     # Batch commit handler
+    # (Always registered. If commit button doesn't exist, never fires.)
     # ================================================================
 
-    if (isTRUE(enable_batch_editing)) {
-      shiny::observeEvent(input$commit, {
-        if (!is_batch_on()) return()
+    shiny::observeEvent(input$commit, {
+      if (!is_batch_on()) return()
 
-        if (state$is_computing) {
-          notify("Already processing, please wait.", type = "warning")
-          return()
+      if (state$is_computing) {
+        notify("Already processing, please wait.", type = "warning")
+        return()
+      }
+
+      if (identical(state$in_editor, state$committed)) {
+        notify("No changes to commit.", type = "message")
+        return()
+      }
+
+      state$is_computing <- TRUE
+      show_busy()
+
+      changes <- detect_changes(state$committed, state$in_editor,
+                                num_locked_rows, tolerance)
+
+      edits <- if (nrow(changes) > 0L) {
+        data.frame(row = changes$row,
+                   col = changes$col,
+                   stringsAsFactors = FALSE)
+      } else {
+        make_edits_df(integer(0), integer(0))
+      }
+
+      data_to_send       <- state$in_editor
+      exec_token         <- generate_token()
+      state$active_token <- exec_token
+      committed_snapshot <- state$committed
+
+      promises::then(
+        with_async_safety(
+          { link_fn(data_to_send, edits) },
+          session = session
+        ),
+        onFulfilled = function(result) {
+          handle_result(result, exec_token, committed_snapshot)
         }
-
-        if (identical(state$in_editor, state$committed)) {
-          notify("No changes to commit.", type = "message")
-          return()
-        }
-
-        state$is_computing <- TRUE
-        show_busy()
-
-        changes <- detect_changes(state$committed, state$in_editor,
-                                  num_locked_rows, tolerance)
-
-        edits <- if (nrow(changes) > 0L) {
-          data.frame(row = changes$row,
-                     col = changes$col,
-                     stringsAsFactors = FALSE)
-        } else {
-          make_edits_df(integer(0), integer(0))
-        }
-
-        data_to_send       <- state$in_editor
-        exec_token         <- generate_token()
-        state$active_token <- exec_token
-        committed_snapshot <- state$committed
-
-        promises::then(
-          with_async_safety(
-            { link_fn(data_to_send, edits) },
-            session = session
-          ),
-          onFulfilled = function(result) {
-            handle_result(result, exec_token, committed_snapshot)
-          }
-        )
-      })
-    }
+      )
+    })
 
     # ================================================================
     # Return reactive committed data
