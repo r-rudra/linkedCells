@@ -5,16 +5,20 @@
 
 #' LinkedCells UI Component
 #'
-#' Creates the table and a placeholder for optional controls below it.
-#' Which controls appear is determined by the server-side flags
-#' (enable_batch_editing, enable_undo_redo) passed to linked_cells_server.
-#'
 #' @param id Module ID (character string)
+#' @param enable_batch_editing Show "Edit multiple cells" checkbox and commit
+#'   button below the table. Default FALSE.
+#' @param enable_undo_redo Show one-step Undo / Redo buttons below the table.
+#'   Default FALSE.
 #'
 #' @export
-linked_cells_ui <- function(id) {
+linked_cells_ui <- function(id,
+                            enable_batch_editing = FALSE,
+                            enable_undo_redo = FALSE) {
 
   ns <- shiny::NS(id)
+
+  has_controls <- enable_batch_editing || enable_undo_redo
 
   shiny::tagList(
 
@@ -23,7 +27,7 @@ linked_cells_ui <- function(id) {
     shiny::tags$head(
       shiny::tags$style(shiny::HTML(sprintf("
 
-        /* -- Flash animation: yellow pulse then fade (3.5s) -- */
+        /* -- Flash animation -- */
         @keyframes lc-flash {
           0%%   { background-color: #FFF176; }
           30%%  { background-color: #FFEE58; }
@@ -43,7 +47,7 @@ linked_cells_ui <- function(id) {
           border-right: 1px solid #cce0f0;
         }
 
-        /* -- Header: light blue theme -- */
+        /* -- Header -- */
         #%s table.dataTable thead th {
           background-color: #D6EAF8 !important;
           color: #1A5276 !important;
@@ -60,8 +64,8 @@ linked_cells_ui <- function(id) {
           font-style: italic;
         }
 
-        /* -- Controls bar below table -- */
-        .lc-controls {
+        /* -- Controls bar -- */
+        #%s {
           display: flex;
           flex-wrap: wrap;
           align-items: center;
@@ -73,16 +77,17 @@ linked_cells_ui <- function(id) {
           border-radius: 4px;
         }
 
-        /* Kill default Shiny checkbox margins so it lines up */
-        .lc-controls .form-group {
-          margin-bottom: 0;
+        /* Force Shiny checkbox inline */
+        #%s .shiny-input-container {
+          display: inline-flex !important;
+          width: auto !important;
+          margin: 0 !important;
         }
-        .lc-controls .checkbox {
-          margin-top: 0;
-          margin-bottom: 0;
+        #%s .checkbox {
+          margin: 0 !important;
         }
 
-        /* Thin vertical separator between control groups */
+        /* Divider */
         .lc-divider {
           width: 1px;
           height: 24px;
@@ -90,20 +95,78 @@ linked_cells_ui <- function(id) {
         }
 
       ",
-                                            ns("table"),    # 1  flash
-                                            ns("table"),    # 2  td border
-                                            ns("table"),    # 3  th border
-                                            ns("table"),    # 4  outer border
-                                            ns("table"),    # 5  thead
-                                            ns("table")     # 6  locked rows
+                                            ns("table"),      # 1
+                                            ns("table"),      # 2
+                                            ns("table"),      # 3
+                                            ns("table"),      # 4
+                                            ns("table"),      # 5
+                                            ns("table"),      # 6
+                                            ns("controls"),   # 7
+                                            ns("controls"),   # 8
+                                            ns("controls")    # 9
       )))
     ),
 
     # ---- Table ----
     DT::DTOutput(ns("table")),
 
-    # ---- Controls placeholder (server decides what goes here) ----
-    shiny::uiOutput(ns("controls_ui"))
+    # ---- Controls (static HTML, only when enabled) ----
+    if (has_controls) {
+      shiny::div(
+        id = ns("controls"),
+
+        # Undo / Redo
+        if (enable_undo_redo) {
+          shiny::tagList(
+            shiny::tags$button(
+              id = ns("undo"),
+              type = "button",
+              class = "btn btn-default btn-sm action-button",
+              title = "Undo last change",
+              shiny::icon("rotate-left")
+            ),
+            shiny::tags$button(
+              id = ns("redo"),
+              type = "button",
+              class = "btn btn-default btn-sm action-button",
+              title = "Redo last undone change",
+              shiny::icon("rotate-right")
+            ),
+            if (enable_batch_editing) shiny::div(class = "lc-divider")
+          )
+        },
+
+        # Batch editing
+        if (enable_batch_editing) {
+          shiny::tagList(
+            shiny::checkboxInput(
+              ns("batch_mode"),
+              "Edit multiple cells",
+              value = FALSE
+            ),
+            # Commit button: always in DOM, hidden initially.
+            # Toggled by pure JS below (no server round-trip).
+            shiny::span(
+              id = ns("commit_wrap"),
+              style = "display: none;",
+              shiny::actionButton(
+                ns("commit"),
+                shiny::tagList(shiny::icon("check"), "Commit"),
+                class = "btn-primary btn-sm"
+              )
+            ),
+            # Pure JS: toggle commit button when checkbox changes.
+            # No shinyjs, no conditionalPanel, no server involvement.
+            shiny::tags$script(shiny::HTML(sprintf(
+              "$(document).on('change', '#%s', function() {
+                 $('#%s').toggle(this.checked);
+               });",
+              ns("batch_mode"), ns("commit_wrap")
+            )))
+          )
+        }
+      )
+    }
   )
 }
 
@@ -115,10 +178,8 @@ linked_cells_ui <- function(id) {
 #' @param num_locked_rows Number of read-only rows at the top (default 0)
 #' @param link_fn Function(data, edits) returning list(data, status, message)
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
-#' @param enable_batch_editing Show "Edit multiple cells" checkbox and commit
-#'   button below the table. Default FALSE.
-#' @param enable_undo_redo Show one-step Undo / Redo icon buttons below the
-#'   table. Default FALSE.
+#' @param enable_batch_editing Must match linked_cells_ui. Default FALSE.
+#' @param enable_undo_redo Must match linked_cells_ui. Default FALSE.
 #'
 #' @return A reactive returning the current committed data.frame
 #'
@@ -137,8 +198,6 @@ linked_cells_server <- function(id,
   shiny::moduleServer(id, function(input, output, session) {
 
     linked_cells_init()
-
-    has_controls <- isTRUE(enable_batch_editing) || isTRUE(enable_undo_redo)
 
     # ---- Reactive state ----
     state <- shiny::reactiveValues(
@@ -289,52 +348,6 @@ linked_cells_server <- function(id,
     }
 
     # ================================================================
-    # Server-rendered controls (the single source of truth)
-    # ================================================================
-
-    output$controls_ui <- shiny::renderUI({
-      if (!has_controls) return(NULL)
-
-      parts <- list()
-
-      if (isTRUE(enable_undo_redo)) {
-        parts <- c(parts, list(
-          shiny::tags$button(
-            id = session$ns("undo"),
-            type = "button",
-            class = "btn btn-default btn-sm action-button",
-            title = "Undo last change",
-            shiny::icon("rotate-left")
-          ),
-          shiny::tags$button(
-            id = session$ns("redo"),
-            type = "button",
-            class = "btn btn-default btn-sm action-button",
-            title = "Redo last undone change",
-            shiny::icon("rotate-right")
-          )
-        ))
-        if (isTRUE(enable_batch_editing)) {
-          parts <- c(parts, list(shiny::div(class = "lc-divider")))
-        }
-      }
-
-      if (isTRUE(enable_batch_editing)) {
-        parts <- c(parts, list(
-          shiny::checkboxInput(
-            session$ns("batch_mode"),
-            "Edit multiple cells",
-            value = FALSE
-          ),
-          shiny::uiOutput(session$ns("commit_button_ui"),
-                          style = "display: inline-block;")
-        ))
-      }
-
-      shiny::div(class = "lc-controls", parts)
-    })
-
-    # ================================================================
     # Undo / Redo
     # ================================================================
 
@@ -343,8 +356,11 @@ linked_cells_server <- function(id,
       shiny::observe({
         can_undo <- !is.null(state$undo_state) && !state$is_computing
         can_redo <- !is.null(state$redo_state) && !state$is_computing
-        shinyjs::toggleState(session$ns("undo"), condition = can_undo)
-        shinyjs::toggleState(session$ns("redo"), condition = can_redo)
+        shinyjs::runjs(sprintf(
+          "$('#%s').prop('disabled',%s); $('#%s').prop('disabled',%s);",
+          session$ns("undo"), if (can_undo) "false" else "true",
+          session$ns("redo"), if (can_redo) "false" else "true"
+        ))
       })
 
       shiny::observeEvent(input$undo, {
@@ -373,24 +389,6 @@ linked_cells_server <- function(id,
         state$committed  <- new_committed
         state$in_editor  <- new_committed
         update_table(new_committed, flash)
-      })
-    }
-
-    # ================================================================
-    # Batch commit button UI
-    # ================================================================
-
-    if (isTRUE(enable_batch_editing)) {
-      output$commit_button_ui <- shiny::renderUI({
-        if (isTRUE(input$batch_mode)) {
-          shiny::actionButton(
-            session$ns("commit"),
-            shiny::tagList(shiny::icon("check"), "Commit"),
-            class = if (state$is_computing) "btn-warning btn-sm"
-            else "btn-primary btn-sm",
-            disabled = if (state$is_computing) "disabled" else NULL
-          )
-        }
       })
     }
 
@@ -451,6 +449,10 @@ linked_cells_server <- function(id,
           paging       = FALSE,
           info         = FALSE,
           searching    = FALSE,
+          autoWidth    = FALSE,
+          columnDefs   = list(
+            list(width = "120px", targets = "_all")
+          ),
           initComplete = init_js
         )
       ) |>

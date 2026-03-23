@@ -8,10 +8,6 @@ devtools::load_all(".")
 
 # ------------------------------------------------------------------
 # Linking function: rebalance edited rows so numeric columns sum to 100.
-#
-# In immediate mode, edits has one row.
-# In batch mode, edits can have multiple rows/cols.
-# Either way, every edited row gets rebalanced.
 # ------------------------------------------------------------------
 link_sum_100 <- function(data, edits) {
 
@@ -20,10 +16,8 @@ link_sum_100 <- function(data, edits) {
 
   for (r in edited_rows) {
 
-    # Identify which column(s) the user touched in this row
     edited_cols <- edits$col[edits$row == r]
 
-    # Validate every edited cell
     for (ec in edited_cols) {
       val <- as.numeric(data[r, ec])
       if (is.na(val)) {
@@ -36,7 +30,6 @@ link_sum_100 <- function(data, edits) {
       }
     }
 
-    # Rebalance: scale the non-edited numeric columns so the row sums to 100
     other_cols <- setdiff(numeric_cols, edited_cols)
     edited_sum <- sum(data[r, edited_cols], na.rm = TRUE)
     other_sum  <- sum(data[r, other_cols],  na.rm = TRUE)
@@ -51,7 +44,6 @@ link_sum_100 <- function(data, edits) {
     }
   }
 
-  # Simulate heavy computation (only on the success path)
   Sys.sleep(2)
 
   list(data = data, status = "success",
@@ -59,7 +51,7 @@ link_sum_100 <- function(data, edits) {
 }
 
 # ------------------------------------------------------------------
-# Sample data (10 rows, each row sums to 100)
+# Sample data
 # ------------------------------------------------------------------
 sample_data <- data.frame(
   Category = paste0("Cat_", 1:10),
@@ -86,7 +78,11 @@ ui <- shiny::fluidPage(
     ),
     shiny::mainPanel(
       width = 9,
-      linked_cells_ui("main_table")
+      linked_cells_ui(
+        "main_table",
+        enable_batch_editing = TRUE,
+        enable_undo_redo     = TRUE
+      )
     )
   )
 )
@@ -101,7 +97,7 @@ server <- function(input, output, session) {
     data                 = sample_data,
     num_locked_rows      = 8,
     link_fn              = link_sum_100,
-    enable_batch_editing = TRUE,
+    enable_batch_editing = FALSE,
     enable_undo_redo     = FALSE
   )
 
