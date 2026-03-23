@@ -16,69 +16,85 @@
 #' @return data.frame with columns: row (integer), col (integer)
 #'
 #' @keywords internal
-detect_changes <- function(data_old, data_new, num_locked_rows = 0, tolerance = 0.1) {
-  
+detect_changes <- function(data_old, data_new, num_locked_rows = 0L, tolerance = 0.1) {
+
+  # -------------------------
   # Validation
+  # -------------------------
   if (!is.data.frame(data_old) || !is.data.frame(data_new)) {
     stop("Both inputs must be dataframes")
   }
-  
-  if (nrow(data_old) != nrow(data_new) || ncol(data_old) != ncol(data_new)) {
+
+  if (nrow(data_old) != nrow(data_new) ||
+      ncol(data_old) != ncol(data_new)) {
     stop("DataFrames must have same dimensions")
   }
-  
-  if (num_locked_rows < 0 || num_locked_rows >= nrow(data_new)) {
+
+  if (num_locked_rows < 0L || num_locked_rows >= nrow(data_new)) {
     stop("num_locked_rows must be 0 <= n < nrow(data_new)")
   }
-  
+
   if (tolerance < 0) {
     stop("tolerance must be >= 0")
   }
-  
-  # Initialize result
-  changes <- data.frame(row = integer(0), col = integer(0))
-  
-  first_editable_row <- num_locked_rows + 1
-  if (first_editable_row > nrow(data_old)) {
-    return(changes)
+
+  # -------------------------
+  # Early exit
+  # -------------------------
+  first_row <- num_locked_rows + 1L
+  n <- nrow(data_old)
+
+  if (first_row > n) {
+    return(data.frame(row = integer(0), col = integer(0)))
   }
-  
-  # Column-by-column comparison (TYPE-SAFE)
-  for (col_idx in seq_len(ncol(data_old))) {
-    
-    old_col <- data_old[first_editable_row:nrow(data_old), col_idx]
-    new_col <- data_new[first_editable_row:nrow(data_old), col_idx]
-    
-    # Detect changes based on column type
+
+  row_idx <- first_row:n
+
+  # -------------------------
+  # Column-wise detection
+  # -------------------------
+  res_list <- lapply(seq_len(ncol(data_old)), function(col_idx) {
+
+    old_col <- data_old[row_idx, col_idx]
+    new_col <- data_new[row_idx, col_idx]
+
     if (is.numeric(old_col) && is.numeric(new_col)) {
-      # Numeric: use tolerance
+
       diff <- abs(old_col - new_col)
-      changed_indices <- which(diff > tolerance)
-      
-    } else if (is.character(old_col) && is.character(new_col)) {
-      # Character: exact match
-      changed_indices <- which(old_col != new_col)
-      
+
+      changed <- (diff > tolerance) |
+        (is.na(old_col) != is.na(new_col))
+
     } else {
-      # Mixed or other types: direct comparison
-      changed_indices <- which(old_col != new_col)
+
+      changed <- (old_col != new_col) |
+        (is.na(old_col) != is.na(new_col))
     }
-    
-    # Add to result
-    if (length(changed_indices) > 0) {
-      actual_rows <- changed_indices + num_locked_rows
-      changes <- rbind(
-        changes,
-        data.frame(
-          row = as.integer(actual_rows),
-          col = as.integer(rep(col_idx, length(changed_indices))),
-          stringsAsFactors = FALSE
-        )
-      )
-    }
+
+    idx <- which(changed)
+
+    if (length(idx) == 0L) return(NULL)
+
+    data.frame(
+      row = as.integer(idx + num_locked_rows),
+      col = as.integer(rep.int(col_idx, length(idx))),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  # -------------------------
+  # Combine
+  # -------------------------
+  res_list <- Filter(Negate(is.null), res_list)
+
+  if (length(res_list) == 0L) {
+    return(data.frame(row = integer(0), col = integer(0)))
   }
-  
-  return(changes)
+
+  out <- do.call(rbind, res_list)
+  rownames(out) <- NULL
+
+  out
 }
 
 #' Build edits dataframe

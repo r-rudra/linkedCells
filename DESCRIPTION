@@ -14,8 +14,9 @@ LazyData: true
 Imports:
     shiny,
     DT,
+    future,
     promises,
-    future
+    shinyjs
 Suggests:
     testthat
 RoxygenNote: 7.3.3
