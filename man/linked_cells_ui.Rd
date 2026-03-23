@@ -10,5 +10,5 @@ linked_cells_ui(id)
 \item{id}{Module ID (character string)}
 }
 \description{
-Creates the user interface for a linked cells table.
+LinkedCells UI Component
 }

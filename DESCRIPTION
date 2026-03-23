@@ -18,6 +18,7 @@ Imports:
     promises,
     shinyjs
 Suggests:
-    testthat
+    testthat (>= 3.0.0)
 RoxygenNote: 7.3.3
 Roxygen: list(markdown = TRUE)
+Config/testthat/edition: 3

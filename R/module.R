@@ -85,16 +85,19 @@ linked_cells_ui <- function(id) {
 #' @export
 linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, tolerance = 0.1) {
 
+  # FIX 4: data validation
+  if (!is.data.frame(data)) {
+    stop("data must be a dataframe")
+  }
+
   if (!is.function(link_fn)) {
     stop("link_fn must be a function")
   }
 
   shiny::moduleServer(id, function(input, output, session) {
 
-    # Initialize async
-    ensure_async_ready()
+    linked_cells_init()
 
-    # State
     state <- shiny::reactiveValues(
       committed = data,
       in_editor = data,
@@ -107,7 +110,6 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
 
     table_proxy <- DT::dataTableProxy(session$ns("table"), session = session)
 
-    # Commit button
     output$commit_button_ui <- shiny::renderUI({
       if (isTRUE(input$batch_mode)) {
         shiny::actionButton(
@@ -119,7 +121,6 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       }
     })
 
-    # Table render
     output$table <- DT::renderDT({
 
       display_data <- if (isTRUE(input$batch_mode)) state$in_editor else state$committed
@@ -143,20 +144,20 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
         DT::formatRound(columns = which(vapply(display_data, is.numeric, logical(1))), digits = 2)
     })
 
-    # Sync committed -> UI
     shiny::observeEvent(state$committed, {
       display_data <- if (isTRUE(input$batch_mode)) state$in_editor else state$committed
       DT::replaceData(table_proxy, display_data, resetPaging = FALSE)
     }, ignoreInit = TRUE)
 
-    # Sync editor -> UI
     shiny::observeEvent(state$in_editor, {
       if (isTRUE(input$batch_mode)) {
         DT::replaceData(table_proxy, state$in_editor, resetPaging = FALSE)
       }
     }, ignoreInit = TRUE)
 
+    # -------------------------
     # Cell edit handler
+    # -------------------------
     shiny::observeEvent(input$table_cell_edit, {
 
       info <- input$table_cell_edit
@@ -164,14 +165,12 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       col_idx <- info$col + 1
       new_value <- info$value
 
-      # Locked row
       if (row_idx <= num_locked_rows) {
         shiny::showNotification("This row is read-only", type = "warning", duration = 2)
         DT::replaceData(table_proxy, state$committed)
         return()
       }
 
-      # Busy guard
       if (state$is_computing) {
         shiny::showNotification("Processing. Please wait", type = "message", duration = 2)
         DT::replaceData(
@@ -181,7 +180,6 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
         return()
       }
 
-      # Batch mode
       if (isTRUE(input$batch_mode)) {
 
         buf <- state$in_editor
@@ -191,7 +189,6 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
           if (is.numeric(old_val)) as.numeric(new_value) else new_value
 
         state$in_editor <- buf
-
         state$last_status <- "buffered"
         state$last_message <- sprintf("Row %d queued", row_idx)
 
@@ -214,25 +211,29 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       exec_token <- generate_token()
       state$active_token <- exec_token
 
-      with_async_safety(
-        {
-          link_fn(data_with_edit, edits)
-        },
-        session = session
-      ) %...>%
-        (function(result) {
+      # FIX 1: replace %...>% with promises::then
+      promises::then(
+        with_async_safety(
+          {
+            link_fn(data_with_edit, edits)
+          },
+          session = session
+        ),
+        onFulfilled = function(result) {
 
           if (!is_token_active(exec_token, state$active_token)) {
             state$is_computing <- FALSE
-            return()
+            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
+            return(NULL)
           }
 
           if (!is.list(result) || !("data" %in% names(result)) || !("status" %in% names(result))) {
             state$is_computing <- FALSE
             state$last_status <- "error"
+            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
             shiny::showNotification("Invalid link_fn result", type = "error")
             DT::replaceData(table_proxy, state$committed)
-            return()
+            return(NULL)
           }
 
           state$last_status <- result$status
@@ -242,40 +243,27 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
                  "success" = {
                    state$committed <- result$data
                    state$in_editor <- result$data
-                   shiny::showNotification(
-                     paste("Success:", state$last_message),
-                     type = "message",
-                     duration = 2
-                   )
                  },
                  "invalid" = {
-                   shiny::showNotification(
-                     paste("Invalid:", result$message %||% ""),
-                     type = "warning",
-                     duration = 3
-                   )
                    state$in_editor <- state$committed
                  },
                  "not_possible" = {
-                   shiny::showNotification(
-                     paste("Not possible:", result$message %||% ""),
-                     type = "error",
-                     duration = 3
-                   )
                    state$in_editor <- state$committed
                  },
                  "unchanged" = {
-                   shiny::showNotification("No changes", type = "message", duration = 2)
                    state$in_editor <- state$committed
                  }
           )
 
           state$is_computing <- FALSE
           shinyjs::removeClass(session$ns("busy"), "show")
-        })
+        }
+      )
     })
 
+    # -------------------------
     # Commit handler
+    # -------------------------
     shiny::observeEvent(input$commit, {
 
       if (!isTRUE(input$batch_mode) || state$is_computing) return()
@@ -298,24 +286,29 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       exec_token <- generate_token()
       state$active_token <- exec_token
 
-      with_async_safety(
-        {
-          link_fn(state$in_editor, changes)
-        },
-        session = session
-      ) %...>%
-        (function(result) {
+      # FIX 1
+      promises::then(
+        with_async_safety(
+          {
+            link_fn(state$in_editor, changes)
+          },
+          session = session
+        ),
+        onFulfilled = function(result) {
 
           if (!is_token_active(exec_token, state$active_token)) {
             state$is_computing <- FALSE
-            return()
+            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
+            return(NULL)
           }
 
-          if (!is.list(result) || !("data" %in% names(result))) {
+          # FIX 3: enforce full contract
+          if (!is.list(result) || !("data" %in% names(result)) || !("status" %in% names(result))) {
             state$is_computing <- FALSE
-            shiny::showNotification("Error", type = "error")
+            shinyjs::removeClass(session$ns("busy"), "show")  # FIX 2
+            shiny::showNotification("Invalid link_fn result", type = "error")
             DT::replaceData(table_proxy, state$committed)
-            return()
+            return(NULL)
           }
 
           state$last_status <- result$status
@@ -323,26 +316,16 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
           if (result$status == "success") {
             state$committed <- result$data
             state$in_editor <- result$data
-            shiny::showNotification(
-              sprintf("Committed %d changes", nrow(changes)),
-              type = "message",
-              duration = 2
-            )
           } else {
-            shiny::showNotification(
-              paste("Failed:", result$message %||% ""),
-              type = "error",
-              duration = 3
-            )
             state$in_editor <- state$committed
           }
 
           state$is_computing <- FALSE
           shinyjs::removeClass(session$ns("busy"), "show")
-        })
+        }
+      )
     })
 
-    # Status display (HTML-safe)
     output$status_text <- shiny::renderUI({
 
       emoji <- switch(
@@ -378,12 +361,10 @@ linked_cells_server <- function(id, data, num_locked_rows = 0, link_fn, toleranc
       ))
     })
 
-    # Return
     shiny::reactive(state$committed)
   })
 }
 
-# Null coalescing
 `%||%` <- function(x, y) {
   if (is.null(x) || is.na(x)) y else x
 }

@@ -4,7 +4,7 @@
 \alias{detect_changes}
 \title{Detect Changes Between DataFrames}
 \usage{
-detect_changes(data_old, data_new, num_locked_rows = 0, tolerance = 0.1)
+detect_changes(data_old, data_new, num_locked_rows = 0L, tolerance = 0.1)
 }
 \arguments{
 \item{data_old}{Original dataframe}

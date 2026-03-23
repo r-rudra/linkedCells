@@ -6,20 +6,6 @@
 \usage{
 linked_cells_server(id, data, num_locked_rows = 0, link_fn, tolerance = 0.1)
 }
-\arguments{
-\item{id}{Module ID}
-
-\item{data}{Initial data frame}
-
-\item{num_locked_rows}{Number of locked rows (default: 0)}
-
-\item{link_fn}{User-defined linking function: function(data, edits)}
-
-\item{tolerance}{Numeric tolerance for change detection (default: 0.1)}
-}
-\value{
-Reactive data frame containing current state
-}
 \description{
-Server logic for linked cells table.
+LinkedCells Server Module
 }

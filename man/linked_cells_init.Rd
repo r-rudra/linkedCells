@@ -4,13 +4,14 @@
 \alias{linked_cells_init}
 \title{Initialize Async Computation for linkedCells}
 \usage{
-linked_cells_init(plan = NULL)
+linked_cells_init(plan = NULL, force = FALSE)
 }
 \arguments{
-\item{plan}{Future plan (default: future::multisession).
-Options: future::sequential, future::multisession, future::multicore}
+\item{plan}{Future plan (default: future::multisession)}
+
+\item{force}{Force re-initialization (default: FALSE)}
 }
 \description{
-Sets up the async execution backend for constraint propagation.
-Safe to call multiple times. If not called, auto-initializes on first use.
+Sets up async backend. Safe to call multiple times.
+Internal code also uses this function (single source of truth).
 }

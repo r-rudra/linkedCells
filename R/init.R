@@ -3,71 +3,57 @@
 # linkedCells: Global initialization and async management
 # ============================================================
 
-# Internal environment for package state (CRAN-safe)
 .linkedcells_env <- new.env(parent = emptyenv())
 .linkedcells_env$async_initialized <- FALSE
 .linkedcells_env$async_plan <- NULL
 
 #' Initialize Async Computation for linkedCells
 #'
-#' Sets up the async execution backend for constraint propagation.
-#' Safe to call multiple times. If not called, auto-initializes on first use.
+#' Sets up async backend. Safe to call multiple times.
+#' Internal code also uses this function (single source of truth).
 #'
-#' @param plan Future plan (default: future::multisession).
-#'   Options: future::sequential, future::multisession, future::multicore
+#' @param plan Future plan (default: future::multisession)
+#' @param force Force re-initialization (default: FALSE)
 #'
 #' @export
-linked_cells_init <- function(plan = NULL) {
-  
+linked_cells_init <- function(plan = NULL, force = FALSE) {
+
+  if (!requireNamespace("future", quietly = TRUE)) {
+    stop("Package 'future' is required for async initialization")
+  }
+
+  # Already initialized
+  if (isTRUE(.linkedcells_env$async_initialized) && !force) {
+    return(invisible(TRUE))
+  }
+
   if (is.null(plan)) {
     plan <- future::multisession
   }
-  
+
+  if (!is.function(plan) && !is.character(plan)) {
+    stop("plan must be a function or character")
+  }
+
   tryCatch(
     {
+      # Reset and set plan (safer)
+      future::plan(future::sequential)
       future::plan(plan)
+
       .linkedcells_env$async_initialized <- TRUE
       .linkedcells_env$async_plan <- plan
-      
-      message("✓ linkedCells async initialized")
+
       invisible(TRUE)
     },
     error = function(e) {
-      warning("Failed to initialize async: ", e$message)
+      warning(sprintf("Failed to initialize async: %s", e$message), call. = FALSE)
       invisible(FALSE)
     }
   )
 }
 
-#' Ensure Async Initialization
-#'
 #' @keywords internal
-ensure_async_ready <- function() {
-  
-  if (isTRUE(.linkedcells_env$async_initialized)) {
-    return(TRUE)
-  }
-  
-  tryCatch(
-    {
-      future::plan(future::multisession)
-      .linkedcells_env$async_initialized <- TRUE
-      .linkedcells_env$async_plan <- future::multisession
-      return(FALSE)
-    },
-    error = function(e) {
-      warning("Auto-init async failed: ", e$message)
-      return(FALSE)
-    }
-  )
-}
-
-#' Get Async State
-#'
-#' @keywords internal
-get_async_state <- function() {
-  list(
-    initialized = .linkedcells_env$async_initialized,
-    plan = .linkedcells_env$async_plan
-  )
+is_async_initialized <- function() {
+  isTRUE(.linkedcells_env$async_initialized)
 }

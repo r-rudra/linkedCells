@@ -30,7 +30,8 @@ detect_changes <- function(data_old, data_new, num_locked_rows = 0L, tolerance =
     stop("DataFrames must have same dimensions")
   }
 
-  if (num_locked_rows < 0L || num_locked_rows >= nrow(data_new)) {
+  if (nrow(data_new) > 0 &&
+      (num_locked_rows < 0L || num_locked_rows >= nrow(data_new))) {
     stop("num_locked_rows must be 0 <= n < nrow(data_new)")
   }
 
@@ -61,14 +62,17 @@ detect_changes <- function(data_old, data_new, num_locked_rows = 0L, tolerance =
     if (is.numeric(old_col) && is.numeric(new_col)) {
 
       diff <- abs(old_col - new_col)
+      cmp <- diff > tolerance
+      cmp[is.na(cmp)] <- FALSE
 
-      changed <- (diff > tolerance) |
-        (is.na(old_col) != is.na(new_col))
+      changed <- cmp | (is.na(old_col) != is.na(new_col))
 
     } else {
 
-      changed <- (old_col != new_col) |
-        (is.na(old_col) != is.na(new_col))
+      neq <- old_col != new_col
+      neq[is.na(neq)] <- FALSE
+
+      changed <- neq | (is.na(old_col) != is.na(new_col))
     }
 
     idx <- which(changed)
