@@ -109,12 +109,24 @@ linked_cells_ui <- function(id,
                                             ns("controls")    # 9
       ))),
 
-      # Compact file upload: show only button, hide text input and progress
+      # Compact file upload: show only icon button, match download button size
       shiny::tags$style(shiny::HTML("
-        .lc-upload-wrap .form-group { margin-bottom: 0 !important; }
-        .lc-upload-wrap .input-group .form-control { display: none; }
+        .lc-upload-wrap { display: inline-flex; align-items: center; }
+        .lc-upload-wrap .form-group { margin: 0 !important; }
         .lc-upload-wrap .input-group { width: auto; }
+        .lc-upload-wrap .input-group .form-control { display: none; }
+        .lc-upload-wrap .input-group-btn { width: auto; }
         .lc-upload-wrap .progress { display: none !important; }
+        .lc-upload-wrap .btn {
+          border-radius: 4px !important;
+        }
+        .lc-io-btn, .lc-upload-wrap .btn {
+          padding: 5px 10px !important;
+          font-size: 12px !important;
+          line-height: 1.5 !important;
+          min-width: 34px;
+          text-align: center;
+        }
       "))
     ),
 
@@ -181,7 +193,7 @@ linked_cells_ui <- function(id,
           shiny::tagList(
             shiny::tags$a(
               id = ns("download"),
-              class = "btn btn-default btn-sm shiny-download-link",
+              class = "btn btn-default btn-sm lc-io-btn shiny-download-link",
               href = "",
               target = "_blank",
               download = NA,
@@ -222,6 +234,8 @@ linked_cells_ui <- function(id,
 #'   \code{list(data, status, message)} where status is one of
 #'   "success", "invalid", "not_possible", or "unchanged".
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
+#' @param file_name_prefix Prefix for downloaded Excel filenames
+#'   (default "linked_cells")
 #'
 #' @return A reactive returning the current committed data.frame
 #'
@@ -230,7 +244,8 @@ linked_cells_server <- function(id,
                                 data,
                                 num_locked_rows = 0,
                                 reconcile_fn,
-                                tolerance = 0.1) {
+                                tolerance = 0.1,
+                                file_name_prefix = "linked_cells") {
 
   if (!is.data.frame(data)) stop("data must be a dataframe")
   if (!is.function(reconcile_fn)) stop("reconcile_fn must be a function")
@@ -639,7 +654,7 @@ linked_cells_server <- function(id,
 
     output$download <- shiny::downloadHandler(
       filename = function() {
-        paste0("linked_cells_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
+        paste0(file_name_prefix, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
       },
       content = function(file) {
         if (!io_packages_ready()) {
@@ -696,13 +711,44 @@ linked_cells_server <- function(id,
       # Coerce types to match current data
       uploaded <- coerce_upload_types(uploaded, state$committed)
 
-      # Replace committed data (supports undo)
-      state$undo_state <- state$committed
-      state$redo_state <- NULL
-      state$committed  <- uploaded
-      state$in_editor  <- uploaded
-      update_table(uploaded)
-      notify("Data uploaded.", duration = 2)
+      # Run reconciliation on all changed cells (like batch commit)
+      state$is_computing <- TRUE
+      show_busy()
+
+      changes <- detect_changes(state$committed, uploaded,
+                                num_locked_rows, tolerance)
+
+      edits <- if (nrow(changes) > 0L) {
+        data.frame(row = changes$row,
+                   col = changes$col,
+                   stringsAsFactors = FALSE)
+      } else {
+        make_edits_df(integer(0), integer(0))
+      }
+
+      exec_token         <- generate_token()
+      state$active_token <- exec_token
+      committed_snapshot <- state$committed
+
+      p <- with_async_safety(
+        { reconcile_fn(uploaded, edits) },
+        session = session
+      )
+
+      promises::then(p,
+                     onFulfilled = function(result) {
+                       handle_result(result, exec_token, committed_snapshot)
+                     },
+                     onRejected = function(err) {
+                       state$is_computing <- FALSE
+                       hide_busy()
+                       notify(paste("Error:", err$message), type = "error", duration = 5)
+                       update_table(state$committed)
+                     }
+      )
+
+      # NULL frees the Shiny event loop for async
+      NULL
     })
 
     # ================================================================

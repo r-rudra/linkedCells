@@ -23,7 +23,7 @@ io_packages_ready <- function() {
 #'
 #' @keywords internal
 write_linked_cells_xlsx <- function(data, file) {
-  openxlsx::write.xlsx(data, file, asTable = TRUE)
+  openxlsx::write.xlsx(data, file, asTable = TRUE, sheetName = "Data")
 }
 
 #' Read Excel file as data.frame
