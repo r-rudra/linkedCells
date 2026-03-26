@@ -508,15 +508,29 @@ linked_cells_server <- function(id,
       state$active_token <- exec_token
       committed_snapshot <- state$committed
 
-      promises::then(
-        with_async_safety(
-          { link_fn(data_with_edit, edits) },
-          session = session
-        ),
-        onFulfilled = function(result) {
-          handle_result(result, exec_token, committed_snapshot)
-        }
+      p <- with_async_safety(
+        { link_fn(data_with_edit, edits) },
+        session = session
       )
+
+      promises::then(p,
+                     onFulfilled = function(result) {
+                       handle_result(result, exec_token, committed_snapshot)
+                     },
+                     onRejected = function(err) {
+                       state$is_computing <- FALSE
+                       hide_busy()
+                       notify(paste("Error:", err$message), type = "error", duration = 5)
+                       update_table(state$committed)
+                     }
+      )
+
+      # Return NULL immediately so Shiny event loop stays free. NULL at end of
+      # both observeEvent blocks — this is the critical part. Without it, Shiny
+      # waits for the promise to resolve before flushing the reactive graph,
+      # which is exactly why your square output was blocked during the table
+      # computation.
+      NULL
     })
 
     # ================================================================
@@ -556,15 +570,30 @@ linked_cells_server <- function(id,
       state$active_token <- exec_token
       committed_snapshot <- state$committed
 
-      promises::then(
-        with_async_safety(
-          { link_fn(data_to_send, edits) },
-          session = session
-        ),
-        onFulfilled = function(result) {
-          handle_result(result, exec_token, committed_snapshot)
-        }
+      p <- with_async_safety(
+        { link_fn(data_to_send, edits) },
+        session = session
       )
+
+      promises::then(p,
+                     onFulfilled = function(result) {
+                       handle_result(result, exec_token, committed_snapshot)
+                     },
+                     onRejected = function(err) {
+                       state$is_computing <- FALSE
+                       hide_busy()
+                       notify(paste("Error:", err$message), type = "error", duration = 5)
+                       update_table(state$committed)
+                     }
+      )
+
+      # Return NULL immediately so Shiny event loop stays free. NULL at end of
+      # both observeEvent blocks — this is the critical part. Without it, Shiny
+      # waits for the promise to resolve before flushing the reactive graph,
+      # which is exactly why your square output was blocked during the table
+      # computation.
+
+      NULL
     })
 
     # ================================================================

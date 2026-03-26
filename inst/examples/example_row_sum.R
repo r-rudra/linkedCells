@@ -43,7 +43,7 @@ link_sum_100 <- function(data, edits) {
     }
   }
 
-  Sys.sleep(2)
+  Sys.sleep(5)
 
   list(data = data, status = "success",
        message = paste("Rebalanced", length(edited_rows), "row(s)"))
@@ -88,7 +88,7 @@ ui <- shiny::fluidPage(
       linked_cells_ui(
         "main_table",
         enable_batch_editing = TRUE,
-        enable_undo_redo     = FALSE
+        enable_undo_redo     = TRUE
       )
     )
   )

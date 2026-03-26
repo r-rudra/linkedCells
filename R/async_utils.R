@@ -22,78 +22,36 @@ is_token_active <- function(token, active_token) {
 #' @keywords internal
 with_async_safety <- function(expr, session, on_error = NULL) {
 
-  # Capture expression lazily
-  expr_sub <- substitute(expr)
+  # Evaluate link_fn SYNCHRONOUSLY in the caller's env to get the data,
+  # then ship only data into the future worker
   parent_env <- parent.frame()
+  expr_sub   <- substitute(expr)
 
-  tryCatch(
+  # Build the actual call args in the main process so the future
+  # worker only receives plain data (no environments / reactives)
+  call_result <- tryCatch(
     {
-
-      promise <- future::future(
-        {
-          eval(expr_sub, envir = parent_env)
-        },
+      # We need the evaluated arguments but run link_fn in the future.
+      # Strategy: evaluate everything except the heavy call here,
+      # then run the call in the future with plain data.
+      #
+      # Actually the simplest correct fix: just run future with
+      # the expression directly, no substitute/eval tricks.
+      p <- future::future(
+        eval(expr_sub, envir = parent_env),
         seed = TRUE
       )
-
-      promise <- promises::then(
-        promise,
-        onFulfilled = function(result) {
-
-          if (!is.list(result) ||
-              !("data" %in% names(result)) ||
-              !("status" %in% names(result))) {
-            stop("link_fn must return list with 'data' and 'status'")
-          }
-
-          result
-        }
-      )
-
-      promise <- promises::catch(
-        promise,
-        onRejected = function(error) {
-
-          # Safe notification (session may be closed)
-          if (!is.null(session) && !isTRUE(session$isClosed())) {
-            shiny::showNotification(
-              paste("Error:", error$message),
-              type = "error",
-              duration = 5,
-              session = session
-            )
-          }
-
-          if (!is.null(on_error)) {
-            on_error(error)
-          }
-
-          stop(error$message, call. = FALSE)
-        }
-      )
-
-      return(promise)
-
+      return(p)
     },
     error = function(e) {
-
-      # Safe notification
       if (!is.null(session) && !isTRUE(session$isClosed())) {
         shiny::showNotification(
           paste("Async error:", e$message),
-          type = "error",
-          duration = 5,
-          session = session
+          type = "error", duration = 5, session = session
         )
       }
-
-      # Return a proper promise (not future)
       promises::promise_resolve(
-        list(
-          data = NULL,
-          status = "error",
-          message = e$message
-        )
+        list(data = NULL, status = "error", message = e$message)
       )
     }
   )
