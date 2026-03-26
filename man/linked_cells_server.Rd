@@ -4,8 +4,45 @@
 \alias{linked_cells_server}
 \title{LinkedCells Server Module}
 \usage{
-linked_cells_server(id, data, num_locked_rows = 0, link_fn, tolerance = 0.1)
+linked_cells_server(
+  id,
+  data,
+  num_locked_rows = 0,
+  reconcile_fn = NULL,
+  tolerance = 0.1,
+  file_name_prefix = "linked_cells",
+  show_notifications = TRUE
+)
+}
+\arguments{
+\item{id}{Module namespace id}
+
+\item{data}{Initial data.frame}
+
+\item{num_locked_rows}{Number of read-only rows at the top (default 0)}
+
+\item{reconcile_fn}{Cell reconciliation function (optional). Called as
+\code{reconcile_fn(data, edits)} where \code{data} is the full dataframe
+with edits applied and \code{edits} is a data.frame of changed cells
+(columns: row, col). Must return
+\code{list(data, status, message)} where status is one of
+"success", "invalid", "not_possible", or "unchanged".
+When omitted, all edits are accepted as-is.}
+
+\item{tolerance}{Numeric tolerance for change detection (default 0.1)}
+
+\item{file_name_prefix}{Prefix for downloaded Excel filenames
+(default "linked_cells")}
+
+\item{show_notifications}{Show Shiny notifications for reconciliation
+results (default TRUE). Automatically set to FALSE when no
+reconcile_fn is provided.}
+}
+\value{
+A reactive returning the current committed data.frame
 }
 \description{
-LinkedCells Server Module
+All optional features (batch editing, undo/redo, IO) are controlled solely
+by the flags on linked_cells_ui. The server automatically detects which
+UI elements exist and responds accordingly -- no flags needed here.
 }

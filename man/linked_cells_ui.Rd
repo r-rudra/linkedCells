@@ -4,10 +4,24 @@
 \alias{linked_cells_ui}
 \title{LinkedCells UI Component}
 \usage{
-linked_cells_ui(id)
+linked_cells_ui(
+  id,
+  enable_batch_editing = FALSE,
+  enable_undo_redo = FALSE,
+  enable_io_buttons = FALSE
+)
 }
 \arguments{
 \item{id}{Module ID (character string)}
+
+\item{enable_batch_editing}{Show "Edit multiple cells" checkbox and commit
+button below the table. Default FALSE.}
+
+\item{enable_undo_redo}{Show one-step Undo / Redo buttons below the table.
+Default FALSE.}
+
+\item{enable_io_buttons}{Show Download / Upload buttons below the table.
+Requires openxlsx and readxl packages. Default FALSE.}
 }
 \description{
 LinkedCells UI Component

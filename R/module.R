@@ -227,15 +227,19 @@ linked_cells_ui <- function(id,
 #' @param id Module namespace id
 #' @param data Initial data.frame
 #' @param num_locked_rows Number of read-only rows at the top (default 0)
-#' @param reconcile_fn Cell reconciliation function. Called as
+#' @param reconcile_fn Cell reconciliation function (optional). Called as
 #'   \code{reconcile_fn(data, edits)} where \code{data} is the full dataframe
 #'   with edits applied and \code{edits} is a data.frame of changed cells
 #'   (columns: row, col). Must return
 #'   \code{list(data, status, message)} where status is one of
 #'   "success", "invalid", "not_possible", or "unchanged".
+#'   When omitted, all edits are accepted as-is.
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
 #' @param file_name_prefix Prefix for downloaded Excel filenames
 #'   (default "linked_cells")
+#' @param show_notifications Show Shiny notifications for reconciliation
+#'   results (default TRUE). Automatically set to FALSE when no
+#'   reconcile_fn is provided.
 #'
 #' @return A reactive returning the current committed data.frame
 #'
@@ -243,12 +247,23 @@ linked_cells_ui <- function(id,
 linked_cells_server <- function(id,
                                 data,
                                 num_locked_rows = 0,
-                                reconcile_fn,
+                                reconcile_fn = NULL,
                                 tolerance = 0.1,
-                                file_name_prefix = "linked_cells") {
+                                file_name_prefix = "linked_cells",
+                                show_notifications = TRUE) {
 
   if (!is.data.frame(data)) stop("data must be a dataframe")
-  if (!is.function(reconcile_fn)) stop("reconcile_fn must be a function")
+  if (!is.null(reconcile_fn) && !is.function(reconcile_fn)) {
+    stop("reconcile_fn must be a function or NULL")
+  }
+
+  # If no reconciliation provided, accept all edits and silence notifications
+  if (is.null(reconcile_fn)) {
+    reconcile_fn <- function(data, edits) {
+      list(data = data, status = "success", message = "")
+    }
+    show_notifications <- FALSE
+  }
 
   shiny::moduleServer(id, function(input, output, session) {
 
@@ -278,6 +293,7 @@ linked_cells_server <- function(id,
     # ================================================================
 
     show_busy <- function() {
+      if (!show_notifications) return(invisible(NULL))
       shiny::showNotification(
         shiny::tags$span(
           shiny::tags$strong("Processing cell links..."),
@@ -291,12 +307,19 @@ linked_cells_server <- function(id,
     }
 
     hide_busy <- function() {
+      if (!show_notifications) return(invisible(NULL))
       shiny::removeNotification(id = busy_id, session = session)
     }
 
     notify <- function(msg, type = "message", duration = 3) {
       shiny::showNotification(msg, type = type, duration = duration,
                               session = session)
+    }
+
+    # Reconciliation outcome messages — silenced when show_notifications is FALSE
+    notify_result <- function(msg, type = "message", duration = 3) {
+      if (!show_notifications) return(invisible(NULL))
+      notify(msg, type = type, duration = duration)
     }
 
     # Batch mode is on only when the checkbox exists AND is checked
@@ -376,21 +399,21 @@ linked_cells_server <- function(id,
                state$in_editor <- result$data
                update_table(result$data, flash)
                msg <- result$message %||% ""
-               if (nzchar(msg)) notify(msg, duration = 2)
+               if (nzchar(msg)) notify_result(msg, duration = 2)
              },
 
              "invalid" = {
                state$in_editor <- state$committed
                update_table(state$committed)
-               notify(result$message %||% "Invalid value.",
-                      type = "warning", duration = 4)
+               notify_result(result$message %||% "Invalid value.",
+                             type = "warning", duration = 4)
              },
 
              "not_possible" = {
                state$in_editor <- state$committed
                update_table(state$committed)
-               notify(result$message %||% "Change not possible.",
-                      type = "warning", duration = 4)
+               notify_result(result$message %||% "Change not possible.",
+                             type = "warning", duration = 4)
              },
 
              "unchanged" = {
@@ -603,7 +626,7 @@ linked_cells_server <- function(id,
       }
 
       if (identical(state$in_editor, state$committed)) {
-        notify("No changes to commit.", type = "message")
+        notify_result("No changes to commit.", type = "message")
         return()
       }
 

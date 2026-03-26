@@ -2,11 +2,21 @@
 % Please edit documentation in R/async_utils.R
 \name{with_async_safety}
 \alias{with_async_safety}
-\title{Safe async execution wrapper}
+\title{Run an expression asynchronously via future}
 \usage{
-with_async_safety(expr, session, on_error = NULL)
+with_async_safety(expr, session)
+}
+\arguments{
+\item{expr}{Expression to evaluate in the future worker}
+
+\item{session}{Shiny session (for error notifications)}
+}
+\value{
+A promise that resolves to the expression result
 }
 \description{
-Safe async execution wrapper
+Wraps \code{future::future()} with error handling. On failure,
+notifies the Shiny session and returns a resolved promise with
+status = "error" so callers always receive a promise.
 }
 \keyword{internal}
