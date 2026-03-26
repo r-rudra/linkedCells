@@ -1,14 +1,17 @@
 Package: linkedCells
 Type: Package
-Title: Reactive Cell Linking Framework for Shiny Tables
+Title: Reactive Cell Linking for Editable Shiny Tables
 Version: 1.0.0
-Authors@R: person("Indranil", "Gayen", role = c("aut", "cre"),
-                  email = "indranil.gayen@example.com")
-Description: A framework for building interactive, constraint-based editable tables
-    in Shiny. Define custom cell-linking logic to automatically update dependent
-    cells when users edit values. Supports async computation, batch editing, and
-    reactive constraint propagation.
-License: MIT
+Authors@R: 
+    person("Indranil", "Gayen",
+           role = c("aut", "cre"),
+           email = "nil.gayen@gmail.com")
+Maintainer: Indranil Gayen <nil.gayen@gmail.com>
+Description: Tools for building interactive editable tables in Shiny with
+    linked cell behaviour. Users can define rules that update dependent
+    cells when values are modified. Supports asynchronous computation,
+    batch editing, and reactive updates across cells.
+License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
 Imports:
@@ -18,7 +21,9 @@ Imports:
     promises,
     shinyjs
 Suggests:
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    openxlsx,
+    readxl
 RoxygenNote: 7.3.3
 Roxygen: list(markdown = TRUE)
 Config/testthat/edition: 3

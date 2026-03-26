@@ -88,7 +88,8 @@ ui <- shiny::fluidPage(
       linked_cells_ui(
         "main_table",
         enable_batch_editing = TRUE,
-        enable_undo_redo     = TRUE
+        enable_undo_redo     = TRUE,
+        enable_io_buttons = TRUE
       )
     )
   )

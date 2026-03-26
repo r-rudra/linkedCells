@@ -10,15 +10,18 @@
 #'   button below the table. Default FALSE.
 #' @param enable_undo_redo Show one-step Undo / Redo buttons below the table.
 #'   Default FALSE.
+#' @param enable_io_buttons Show Download / Upload buttons below the table.
+#'   Requires openxlsx and readxl packages. Default FALSE.
 #'
 #' @export
 linked_cells_ui <- function(id,
                             enable_batch_editing = FALSE,
-                            enable_undo_redo = FALSE) {
+                            enable_undo_redo = FALSE,
+                            enable_io_buttons = FALSE) {
 
   ns <- shiny::NS(id)
 
-  has_controls <- enable_batch_editing || enable_undo_redo
+  has_controls <- enable_batch_editing || enable_undo_redo || enable_io_buttons
 
   shiny::tagList(
 
@@ -104,13 +107,21 @@ linked_cells_ui <- function(id,
                                             ns("controls"),   # 7
                                             ns("controls"),   # 8
                                             ns("controls")    # 9
-      )))
+      ))),
+
+      # Compact file upload: show only button, hide text input and progress
+      shiny::tags$style(shiny::HTML("
+        .lc-upload-wrap .form-group { margin-bottom: 0 !important; }
+        .lc-upload-wrap .input-group .form-control { display: none; }
+        .lc-upload-wrap .input-group { width: auto; }
+        .lc-upload-wrap .progress { display: none !important; }
+      "))
     ),
 
     # ---- Table ----
     DT::DTOutput(ns("table")),
 
-    # ---- Controls (static HTML, only when enabled) ----
+    # ---- Controls (only when at least one feature enabled) ----
     if (has_controls) {
       shiny::div(
         id = ns("controls"),
@@ -132,7 +143,9 @@ linked_cells_ui <- function(id,
               title = "Redo last undone change",
               shiny::icon("rotate-right")
             ),
-            if (enable_batch_editing) shiny::div(class = "lc-divider")
+            if (enable_batch_editing || enable_io_buttons) {
+              shiny::div(class = "lc-divider")
+            }
           )
         },
 
@@ -158,7 +171,33 @@ linked_cells_ui <- function(id,
                  $('#%s').toggle(this.checked);
                });",
               ns("batch_mode"), ns("commit_wrap")
-            )))
+            ))),
+            if (enable_io_buttons) shiny::div(class = "lc-divider")
+          )
+        },
+
+        # Download / Upload
+        if (enable_io_buttons) {
+          shiny::tagList(
+            shiny::tags$a(
+              id = ns("download"),
+              class = "btn btn-default btn-sm shiny-download-link",
+              href = "",
+              target = "_blank",
+              download = NA,
+              title = "Download as Excel",
+              shiny::icon("download")
+            ),
+            shiny::div(
+              class = "lc-upload-wrap",
+              shiny::fileInput(
+                ns("file_upload"),
+                label = NULL,
+                accept = ".xlsx",
+                buttonLabel = shiny::icon("upload"),
+                placeholder = ""
+              )
+            )
           )
         }
       )
@@ -169,7 +208,7 @@ linked_cells_ui <- function(id,
 
 #' LinkedCells Server Module
 #'
-#' All optional features (batch editing, undo/redo) are controlled solely
+#' All optional features (batch editing, undo/redo, IO) are controlled solely
 #' by the flags on linked_cells_ui. The server automatically detects which
 #' UI elements exist and responds accordingly -- no flags needed here.
 #'
@@ -591,6 +630,79 @@ linked_cells_server <- function(id,
 
       # NULL frees the Shiny event loop for async
       NULL
+    })
+
+    # ================================================================
+    # Download / Upload handlers
+    # (Always registered. If buttons don't exist, never triggered.)
+    # ================================================================
+
+    output$download <- shiny::downloadHandler(
+      filename = function() {
+        paste0("linked_cells_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx")
+      },
+      content = function(file) {
+        if (!io_packages_ready()) {
+          warning(
+            "IO requires packages 'openxlsx' and 'readxl'. ",
+            "Install them to enable download/upload.",
+            call. = FALSE
+          )
+          writeLines("", file)
+          return()
+        }
+        write_linked_cells_xlsx(state$committed, file)
+      }
+    )
+
+    shiny::observeEvent(input$file_upload, {
+      file_info <- input$file_upload
+      if (is.null(file_info)) return()
+
+      if (!io_packages_ready()) {
+        warning(
+          "IO requires packages 'openxlsx' and 'readxl'. ",
+          "Install them to enable download/upload.",
+          call. = FALSE
+        )
+        return()
+      }
+
+      uploaded <- tryCatch(
+        read_linked_cells_xlsx(file_info$datapath),
+        error = function(e) {
+          notify(paste("Failed to read file:", e$message),
+                 type = "error", duration = 5)
+          NULL
+        }
+      )
+      if (is.null(uploaded)) return()
+
+      # Validate column names
+      mismatch <- validate_upload_columns(names(uploaded), names(state$committed))
+      if (!is.null(mismatch)) {
+        notify(paste("Column mismatch \u2014", mismatch),
+               type = "warning", duration = 6)
+        return()
+      }
+
+      # Validate row count against locked rows
+      if (num_locked_rows > 0L && num_locked_rows >= nrow(uploaded)) {
+        notify("Uploaded data has too few rows for locked row setting.",
+               type = "error", duration = 5)
+        return()
+      }
+
+      # Coerce types to match current data
+      uploaded <- coerce_upload_types(uploaded, state$committed)
+
+      # Replace committed data (supports undo)
+      state$undo_state <- state$committed
+      state$redo_state <- NULL
+      state$committed  <- uploaded
+      state$in_editor  <- uploaded
+      update_table(uploaded)
+      notify("Data uploaded.", duration = 2)
     })
 
     # ================================================================
