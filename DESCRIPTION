@@ -13,17 +13,20 @@ Description: Tools for building interactive editable tables in Shiny with
     batch editing, and reactive updates across cells.
 License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
+Depends:
+    R (>= 4.1.0)
 Imports:
     shiny,
     DT,
     future,
     promises,
-    shinyjs
+    shinyjs,
+    jsonlite
 Suggests:
     testthat (>= 3.0.0),
     openxlsx,
-    readxl
+    readxl,
+    later
 RoxygenNote: 7.3.3
 Roxygen: list(markdown = TRUE)
 Config/testthat/edition: 3
