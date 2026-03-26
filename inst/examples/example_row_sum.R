@@ -1,9 +1,8 @@
 # ============================================================
-# linkedCells Example: Row Sum = 100
+# linkedCells Example: Row Sum = 100 (With Async Test Input)
 # ============================================================
 
 library(shiny)
-library(DT)
 devtools::load_all(".")
 
 # ------------------------------------------------------------------
@@ -74,6 +73,14 @@ ui <- shiny::fluidPage(
       shiny::p("Rows 1-8 are locked. Edit any numeric cell in rows 9 or 10."),
       shiny::p("The other columns auto-adjust so the row still sums to 100."),
       shiny::hr(),
+
+      # --- NEW: Dummy Async Test Input ---
+      shiny::h4("Async Test"),
+      shiny::numericInput("dummy_num", "Enter a number:", value = 5),
+      shiny::verbatimTextOutput("dummy_square_out"),
+      shiny::hr(),
+      # -----------------------------------
+
       shiny::verbatimTextOutput("row_sums")
     ),
     shiny::mainPanel(
@@ -91,6 +98,14 @@ ui <- shiny::fluidPage(
 # Server  (no flags needed -- UI controls what appears)
 # ------------------------------------------------------------------
 server <- function(input, output, session) {
+
+  # --- NEW: Dummy Async Test Logic ---
+  output$dummy_square_out <- shiny::renderPrint({
+    shiny::req(input$dummy_num)
+    result <- input$dummy_num ^ 2
+    paste("Square :", result)
+  })
+  # -----------------------------------
 
   reactive_data <- linked_cells_server(
     "main_table",

@@ -573,6 +573,7 @@ linked_cells_server <- function(id,
 
     shiny::reactive(state$committed)
   })
+
 }
 
 
