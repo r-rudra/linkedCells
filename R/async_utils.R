@@ -17,31 +17,26 @@ is_token_active <- function(token, active_token) {
   identical(token, active_token)
 }
 
-#' Safe async execution wrapper
+#' Run an expression asynchronously via future
+#'
+#' Wraps \code{future::future()} with error handling. On failure,
+#' notifies the Shiny session and returns a resolved promise with
+#' status = "error" so callers always receive a promise.
+#'
+#' @param expr Expression to evaluate in the future worker
+#' @param session Shiny session (for error notifications)
+#'
+#' @return A promise that resolves to the expression result
 #'
 #' @keywords internal
-with_async_safety <- function(expr, session, on_error = NULL) {
+with_async_safety <- function(expr, session) {
 
-  # Evaluate link_fn SYNCHRONOUSLY in the caller's env to get the data,
-  # then ship only data into the future worker
   parent_env <- parent.frame()
   expr_sub   <- substitute(expr)
 
-  # Build the actual call args in the main process so the future
-  # worker only receives plain data (no environments / reactives)
-  call_result <- tryCatch(
+  tryCatch(
     {
-      # We need the evaluated arguments but run link_fn in the future.
-      # Strategy: evaluate everything except the heavy call here,
-      # then run the call in the future with plain data.
-      #
-      # Actually the simplest correct fix: just run future with
-      # the expression directly, no substitute/eval tricks.
-      p <- future::future(
-        eval(expr_sub, envir = parent_env),
-        seed = TRUE
-      )
-      return(p)
+      future::future(eval(expr_sub, envir = parent_env), seed = TRUE)
     },
     error = function(e) {
       if (!is.null(session) && !isTRUE(session$isClosed())) {

@@ -111,7 +111,7 @@ server <- function(input, output, session) {
     "main_table",
     data            = sample_data,
     num_locked_rows = 8,
-    link_fn         = link_sum_100
+    reconcile_fn    = link_sum_100
   )
 
   output$row_sums <- shiny::renderPrint({

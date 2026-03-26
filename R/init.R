@@ -53,7 +53,3 @@ linked_cells_init <- function(plan = NULL, force = FALSE) {
   )
 }
 
-#' @keywords internal
-is_async_initialized <- function() {
-  isTRUE(.linkedcells_env$async_initialized)
-}

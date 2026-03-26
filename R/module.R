@@ -176,7 +176,12 @@ linked_cells_ui <- function(id,
 #' @param id Module namespace id
 #' @param data Initial data.frame
 #' @param num_locked_rows Number of read-only rows at the top (default 0)
-#' @param link_fn Function(data, edits) returning list(data, status, message)
+#' @param reconcile_fn Cell reconciliation function. Called as
+#'   \code{reconcile_fn(data, edits)} where \code{data} is the full dataframe
+#'   with edits applied and \code{edits} is a data.frame of changed cells
+#'   (columns: row, col). Must return
+#'   \code{list(data, status, message)} where status is one of
+#'   "success", "invalid", "not_possible", or "unchanged".
 #' @param tolerance Numeric tolerance for change detection (default 0.1)
 #'
 #' @return A reactive returning the current committed data.frame
@@ -185,17 +190,19 @@ linked_cells_ui <- function(id,
 linked_cells_server <- function(id,
                                 data,
                                 num_locked_rows = 0,
-                                link_fn,
+                                reconcile_fn,
                                 tolerance = 0.1) {
 
   if (!is.data.frame(data)) stop("data must be a dataframe")
-  if (!is.function(link_fn)) stop("link_fn must be a function")
+  if (!is.function(reconcile_fn)) stop("reconcile_fn must be a function")
 
   shiny::moduleServer(id, function(input, output, session) {
 
     linked_cells_init()
 
     # ---- Reactive state ----
+    # last_status / last_message track the most recent reconciliation outcome.
+    # Not currently exposed but useful for debugging and future status display.
     state <- shiny::reactiveValues(
       committed    = data,
       in_editor    = data,
@@ -296,7 +303,7 @@ linked_cells_server <- function(id,
         state$is_computing <- FALSE
         state$last_status  <- "error"
         hide_busy()
-        notify("link_fn returned an invalid result.",
+        notify("reconcile_fn returned an invalid result.",
                type = "error", duration = 5)
         update_table(state$committed)
         return(NULL)
@@ -345,8 +352,7 @@ linked_cells_server <- function(id,
     # ================================================================
     # Undo / Redo
     # (Observers always registered. If buttons don't exist in UI,
-    #  the observeEvents simply never fire. jQuery on missing
-    #  elements is harmless.)
+    #  the observeEvents simply never fire.)
     # ================================================================
 
     shiny::observe({
@@ -494,7 +500,7 @@ linked_cells_server <- function(id,
         return()
       }
 
-      # ---- Immediate mode: link_fn async ----
+      # ---- Immediate mode: reconcile async ----
       state$is_computing <- TRUE
       show_busy()
 
@@ -509,7 +515,7 @@ linked_cells_server <- function(id,
       committed_snapshot <- state$committed
 
       p <- with_async_safety(
-        { link_fn(data_with_edit, edits) },
+        { reconcile_fn(data_with_edit, edits) },
         session = session
       )
 
@@ -525,11 +531,7 @@ linked_cells_server <- function(id,
                      }
       )
 
-      # Return NULL immediately so Shiny event loop stays free. NULL at end of
-      # both observeEvent blocks — this is the critical part. Without it, Shiny
-      # waits for the promise to resolve before flushing the reactive graph,
-      # which is exactly why your square output was blocked during the table
-      # computation.
+      # NULL frees the Shiny event loop for async
       NULL
     })
 
@@ -571,7 +573,7 @@ linked_cells_server <- function(id,
       committed_snapshot <- state$committed
 
       p <- with_async_safety(
-        { link_fn(data_to_send, edits) },
+        { reconcile_fn(data_to_send, edits) },
         session = session
       )
 
@@ -587,12 +589,7 @@ linked_cells_server <- function(id,
                      }
       )
 
-      # Return NULL immediately so Shiny event loop stays free. NULL at end of
-      # both observeEvent blocks — this is the critical part. Without it, Shiny
-      # waits for the promise to resolve before flushing the reactive graph,
-      # which is exactly why your square output was blocked during the table
-      # computation.
-
+      # NULL frees the Shiny event loop for async
       NULL
     })
 
